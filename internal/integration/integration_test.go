@@ -138,10 +138,8 @@ func TestPipeline(t *testing.T) {
 func (f *fixture) assertNoSurvivor(t *testing.T) {
 	reals := f.realIdentifiers(t)
 	var blob strings.Builder
-	for _, tbl := range []string{"profile_shape", "profile_catalog", "profile_columns",
-		"profile_relations", "profile_workload", "profile_hot_columns",
-		"profile_queries", "profile_conventions"} {
-		rows, err := f.ex.Query(f.ctx, fmt.Sprintf("SELECT * FROM `%s`.%s", f.metaDB, tbl))
+	for tbl, cols := range store.ProfileContentColumns {
+		rows, err := f.ex.Query(f.ctx, fmt.Sprintf("SELECT %s FROM `%s`.%s", strings.Join(cols, ", "), f.metaDB, tbl))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -172,13 +170,7 @@ func (f *fixture) assertNoSurvivor(t *testing.T) {
 	text := blob.String()
 	survivors := 0
 	for _, real := range reals {
-		// skip identifiers that are pure SQL vocabulary (kept by design) —
-		// e.g. a column literally named "time" or "name" would also appear in
-		// type strings. Require word-boundary-ish containment of long names.
-		if len(real) < 6 {
-			continue
-		}
-		if strings.Contains(text, real) {
+		if discover.WordPresent(text, real) {
 			survivors++
 			t.Errorf("real identifier survived (len %d): %s...", len(real), real[:3])
 		}

@@ -44,6 +44,20 @@ type Convention struct {
 const qlogSystemFilter = `splitByChar('.', t)[1] NOT IN
   ('system','information_schema','INFORMATION_SCHEMA','_temporary_and_external_tables','_table_function')`
 
+// tokenDBPattern matches our own sandbox databases (mirror of token.ReservedRe).
+const tokenDBPattern = `^(db|tbl|col|user|role|dict|cluster|disk|host|sql|field|enum)_[0-9a-f]{8,16}$`
+
+// ownQueryFilter excludes the tool's own footprint from workload mining: any
+// query touching a token-pattern database or the meta DB is ours (sandbox
+// materialization INSERT...SELECTs carry the value seed and token names) or
+// is sandbox exploration — neither is business workload. Without this, a
+// previous run's INSERTs become "representative queries" and the reserved-
+// namespace guard aborts the next run (observed live on the demo server).
+func (r *Run) ownQueryFilter() string {
+	return fmt.Sprintf(`NOT arrayExists(x -> match(splitByChar('.', x)[1], '%s')
+	  OR splitByChar('.', x)[1] = '%s', tables)`, tokenDBPattern, strings.ReplaceAll(r.Cfg.MetaDB, "'", "\\'"))
+}
+
 // mining runs all of phase 5. No-ops gracefully when the query log is empty
 // (catalog-only mode, recorded in notes).
 func (r *Run) mining(ctx context.Context) error {
@@ -77,7 +91,8 @@ func (r *Run) hotTables(ctx context.Context) error {
 		WHERE type = 'QueryFinish'
 		  AND event_date >= today() - %d
 		  AND %s
-		GROUP BY t ORDER BY execs DESC LIMIT 50`, r.Cfg.WindowDays, qlogSystemFilter))
+		  AND %s
+		GROUP BY t ORDER BY execs DESC LIMIT 50`, r.Cfg.WindowDays, qlogSystemFilter, r.ownQueryFilter()))
 	if err != nil {
 		return fmt.Errorf("phase5a: %w", err)
 	}
@@ -110,11 +125,12 @@ func (r *Run) hotColumns(ctx context.Context) error {
 		  SELECT arrayJoin(tables) AS t, arrayJoin(columns) AS col
 		  FROM system.query_log
 		  WHERE type = 'QueryFinish' AND event_date >= today() - %d
+		    AND %s
 		)
 		WHERE t IN (%s) AND startsWith(col, concat(t, '.'))
 		GROUP BY t, col
 		ORDER BY t, touches DESC
-		LIMIT 25 BY t`, r.Cfg.WindowDays, strings.Join(hotNames, ",")))
+		LIMIT 25 BY t`, r.Cfg.WindowDays, r.ownQueryFilter(), strings.Join(hotNames, ",")))
 	if err != nil {
 		return fmt.Errorf("phase5c: %w", err)
 	}
@@ -144,8 +160,9 @@ func (r *Run) repQueries(ctx context.Context) error {
 			WHERE type = 'QueryFinish'
 			  AND event_date >= today() - %d
 			  AND has(tables, '%s')
+			  AND %s
 			GROUP BY normalized_query_hash
-			ORDER BY execs DESC LIMIT 3`, r.Cfg.WindowDays, strings.ReplaceAll(h.Full, "'", "\\'")))
+			ORDER BY execs DESC LIMIT 3`, r.Cfg.WindowDays, strings.ReplaceAll(h.Full, "'", "\\'"), r.ownQueryFilter()))
 		if err != nil {
 			return fmt.Errorf("phase5d %s: %w", h.Full, err)
 		}
@@ -173,6 +190,7 @@ func (r *Run) formRatios(ctx context.Context) error {
 		    AND event_date >= today() - %d
 		    AND query_kind = 'Select'
 		    AND has(tables, '%s')
+		    AND %s
 		  GROUP BY body
 		)
 		SELECT
@@ -185,7 +203,7 @@ func (r *Run) formRatios(ctx context.Context) error {
 		  sumIf(execs, match(body, '\\btostartofday\\s*\\('))              AS uses_tostartofday,
 		  sumIf(execs, match(body, '\\bselect\\s+\\*'))                    AS uses_select_star,
 		  sum(execs)                                                       AS total
-		FROM q`, r.Cfg.WindowDays, strings.ReplaceAll(top, "'", "\\'")))
+		FROM q`, r.Cfg.WindowDays, strings.ReplaceAll(top, "'", "\\'"), r.ownQueryFilter()))
 	if err != nil {
 		return fmt.Errorf("phase5d1: %w", err)
 	}

@@ -197,12 +197,39 @@ func probeOrder(toks []tok, i int) []string {
 // Rewriter rewrites SQL text through the identifier map.
 type Rewriter struct {
 	IdMap *idmap.IdMap
-	Keep  map[string]bool // UPPER vocab: data types + cluster funcs/settings
-	cache map[[2]string]string
+	Keep  map[string]bool // UPPER vocab: data types + cluster funcs/settings/engines
+	// Combinators are aggregate-function combinator suffixes (UPPER, e.g.
+	// "IF", "ARRAY", "MERGE") — sumIf/groupUniqArrayArray etc. are vocabulary
+	// even though system.functions doesn't enumerate the combined forms.
+	Combinators []string
+	cache       map[[2]string]string
 
 	IdsSubstituted  int
 	StringsRedacted int
 	ValuesUnparsed  int
+}
+
+// vocabKeep reports whether a word is CH vocabulary: directly in the keep
+// registry, or a keep-registry function with combinator suffixes stacked on.
+func (rw *Rewriter) vocabKeep(word string) bool {
+	u := strings.ToUpper(word)
+	if rw.Keep[u] {
+		return true
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, c := range rw.Combinators {
+			if len(u) > len(c) && strings.HasSuffix(u, c) {
+				u = u[:len(u)-len(c)]
+				if rw.Keep[u] {
+					return true
+				}
+				changed = true
+				break
+			}
+		}
+	}
+	return false
 }
 
 // NewKeepRegistry combines SQL keywords, type keywords and the cluster's own
@@ -239,8 +266,7 @@ func (rw *Rewriter) IdentifierWords(value string) []string {
 	for i, t := range toks {
 		switch t.kind {
 		case tWord:
-			u := strings.ToUpper(t.text)
-			if sqlKeywords[u] || rw.Keep[u] || nextIs(toks, i, "(") {
+			if sqlKeywords[strings.ToUpper(t.text)] || rw.vocabKeep(t.text) || nextIs(toks, i, "(") {
 				continue
 			}
 			out = append(out, t.text)
@@ -350,7 +376,7 @@ func (rw *Rewriter) tok(toks []tok, i int, t tok, strict bool) string {
 		rw.IdsSubstituted++
 		return tok
 	}
-	if rw.Keep[strings.ToUpper(t.text)] { // data type / function / setting
+	if rw.vocabKeep(t.text) { // data type / function / setting / engine / combinator form
 		return t.text
 	}
 	if nextIs(toks, i, "(") { // unknown function

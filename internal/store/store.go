@@ -94,6 +94,24 @@ var MetaTables = []string{
 	"profile_conventions", "profile_verification",
 }
 
+// ProfileContentColumns lists, per LLM-readable profile table, the columns
+// that can carry tokenized content. The omitted columns hold only enumerated
+// vocabulary this tool generates (masking classes, roles, engine names,
+// statuses) — they cannot carry customer identifiers by construction, and a
+// real column named e.g. "time" must not false-positive against the class
+// vocabulary in leak scans. Used by `anond verify` and the integration tests.
+var ProfileContentColumns = map[string][]string{
+	"profile_shape":        {"value"},
+	"profile_catalog":      {"db_token", "table_token", "sorting_key_tok", "partition_key_tok", "review_flags"},
+	"profile_columns":      {"db_token", "table_token", "col_token", "type_tok"},
+	"profile_relations":    {"src_db_tok", "src_tbl_tok", "dst_db_tok", "dst_tbl_tok", "detail"},
+	"profile_workload":     {"db_token", "table_token", "users_tok"},
+	"profile_hot_columns":  {"db_token", "table_token", "col_token"},
+	"profile_queries":      {"query_tok"},
+	"profile_conventions":  {"db_token", "table_token"},
+	"profile_verification": {"subject", "detail"},
+}
+
 func (s *Store) Init(ctx context.Context) error {
 	if err := s.Ex.Exec(ctx, "CREATE DATABASE IF NOT EXISTS "+quoteIdent(s.MetaDB)); err != nil {
 		return fmt.Errorf("store: create meta db: %w", err)

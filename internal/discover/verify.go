@@ -75,19 +75,46 @@ func (r *Run) verify(ctx context.Context) error {
 }
 
 // findLeak scans emitted DDL for the table's real identifiers or the seed.
+// Word-boundary matching: a column named "time" must not false-positive on
+// the DateTime type keyword.
 func findLeak(ddl string, t *Table, seed uint64) string {
-	if strings.Contains(ddl, fmt.Sprintf("%d", seed)) {
+	if WordPresent(ddl, fmt.Sprintf("%d", seed)) {
 		return "value seed present"
 	}
 	for _, name := range append([]string{t.Database, t.Name}, colNames(t)...) {
 		if len(name) < 4 {
-			continue // single-letter names would false-positive on tokens
+			continue // very short names false-positive too easily; tokens never contain them whole
 		}
-		if strings.Contains(ddl, name) {
+		if WordPresent(ddl, name) {
 			return "real identifier present (len " + fmt.Sprint(len(name)) + ")"
 		}
 	}
 	return ""
+}
+
+// WordPresent reports whether name occurs in text as a whole word
+// (non-[A-Za-z0-9_] or string edge on both sides).
+func WordPresent(text, name string) bool {
+	if name == "" {
+		return false
+	}
+	isWord := func(b byte) bool {
+		return b == '_' || ('0' <= b && b <= '9') || ('a' <= b && b <= 'z') || ('A' <= b && b <= 'Z')
+	}
+	for from := 0; ; {
+		i := strings.Index(text[from:], name)
+		if i < 0 {
+			return false
+		}
+		i += from
+		leftOK := i == 0 || !isWord(text[i-1])
+		j := i + len(name)
+		rightOK := j == len(text) || !isWord(text[j])
+		if leftOK && rightOK {
+			return true
+		}
+		from = i + 1
+	}
 }
 
 func colNames(t *Table) []string {

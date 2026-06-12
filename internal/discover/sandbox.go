@@ -211,24 +211,45 @@ func (r *Run) sandbox(ctx context.Context, plans []*tablePlan) error {
 		}
 
 		// populate — the ONLY place masking expressions (seed + real names) appear
+		insert := func(where string) error {
+			return r.Ex.Exec(ctx, fmt.Sprintf("INSERT INTO %s.%s SELECT %s FROM %s.%s%s LIMIT %d",
+				qident(p.DBTok), qident(p.TblTok), strings.Join(exprs, ", "),
+				qident(p.T.Database), qident(p.T.Name), where, r.Cfg.SampleRows))
+		}
+		count := func() (uint64, error) {
+			cnt, err := r.Ex.Query(ctx, fmt.Sprintf("SELECT count() FROM %s.%s", qident(p.DBTok), qident(p.TblTok)))
+			if err != nil {
+				return 0, err
+			}
+			return u64(cnt.Data[0][0]), nil
+		}
 		where := ""
 		if tc := timeFilterCol(p); tc != "" {
 			where = fmt.Sprintf(" WHERE %s >= now() - INTERVAL %d DAY", qident(tc), r.Cfg.WindowDays)
 		}
-		insert := fmt.Sprintf("INSERT INTO %s.%s SELECT %s FROM %s.%s%s LIMIT %d",
-			qident(p.DBTok), qident(p.TblTok), strings.Join(exprs, ", "),
-			qident(p.T.Database), qident(p.T.Name), where, r.Cfg.SampleRows)
-		if err := r.Ex.Exec(ctx, insert); err != nil {
+		if err := insert(where); err != nil {
 			// Per-table failure (exotic type, permissions) must not kill the
 			// run: record and continue; the table simply isn't sandboxed.
 			r.Notes = append(r.Notes, fmt.Sprintf("sandbox populate failed for %s: %s", fullTok, firstLine(err.Error())))
 			continue
 		}
-		cnt, err := r.Ex.Query(ctx, fmt.Sprintf("SELECT count() FROM %s.%s", qident(p.DBTok), qident(p.TblTok)))
+		n, err := count()
 		if err != nil {
 			return err
 		}
-		r.SandboxRows[p.T.Full()] = u64(cnt.Data[0][0])
+		if n == 0 && where != "" && p.T.TotalRows > 0 {
+			// static/old dataset: the recency window emptied the sample.
+			// Fall back to unwindowed first-N.
+			if err := insert(""); err != nil {
+				r.Notes = append(r.Notes, fmt.Sprintf("sandbox unwindowed fallback failed for %s: %s", fullTok, firstLine(err.Error())))
+				continue
+			}
+			if n, err = count(); err != nil {
+				return err
+			}
+			r.Notes = append(r.Notes, fmt.Sprintf("sandbox %s: no rows in the %d-day window, sampled unwindowed first-N instead", fullTok, r.Cfg.WindowDays))
+		}
+		r.SandboxRows[p.T.Full()] = n
 	}
 	if r.Cfg.SampleRows > 0 {
 		r.Notes = append(r.Notes, fmt.Sprintf("sandbox sampled at most %d rows per table (time-window filter when a key time column exists, else first-N): distributions of larger tables are biased", r.Cfg.SampleRows))

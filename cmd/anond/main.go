@@ -213,13 +213,11 @@ func cmdVerify(args []string) error {
 		}
 	}
 
-	// concatenate all LLM-readable profile text
+	// concatenate the content-bearing columns of the LLM-readable profile
 	var sb strings.Builder
-	for _, tbl := range []string{"profile_shape", "profile_catalog", "profile_columns",
-		"profile_relations", "profile_workload", "profile_hot_columns",
-		"profile_queries", "profile_conventions", "profile_verification"} {
+	for tbl, cols := range store.ProfileContentColumns {
 		res, err := ex.Query(ctx, fmt.Sprintf(
-			"SELECT * FROM `%s`.%s WHERE run_id = '%s'", *metaDB, tbl, runID))
+			"SELECT %s FROM `%s`.%s WHERE run_id = '%s'", strings.Join(cols, ", "), *metaDB, tbl, runID))
 		if err != nil {
 			return err
 		}
@@ -235,7 +233,7 @@ func cmdVerify(args []string) error {
 	blob := sb.String()
 	survivors := 0
 	for _, real := range reals {
-		if strings.Contains(blob, real) {
+		if discover.WordPresent(blob, real) {
 			survivors++
 			fmt.Printf("SURVIVOR: a real identifier (len %d) appears in profile output\n", len(real))
 		}
@@ -266,7 +264,7 @@ func cmdVerify(args []string) error {
 			ddl = *sc.Data[0][0]
 		}
 		for _, real := range reals {
-			if strings.Contains(ddl, real) {
+			if discover.WordPresent(ddl, real) {
 				badSandbox++
 				fmt.Printf("DDL LEAK in %s (identifier len %d)\n", full, len(real))
 			}

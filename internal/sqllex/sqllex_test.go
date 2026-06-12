@@ -183,6 +183,30 @@ func TestIdentifierWords(t *testing.T) {
 	}
 }
 
+func TestCombinatorVocabulary(t *testing.T) {
+	m, _ := token.NewMinter([]byte("test-key-0123456789abcdef"))
+	im := idmap.New(m)
+	rw := NewRewriter(im, NewKeepRegistry([]string{"sum", "groupUniqArray", "MergeTree", "ReplacingMergeTree"}))
+	rw.Combinators = []string{"IF", "ARRAY", "MERGE", "STATE", "ORNULL"}
+
+	// combinator-stacked forms are vocabulary, not identifiers
+	words := rw.IdentifierWords("SimpleAggregateFunction(groupUniqArrayArray, x), sumIf, sumIfOrNull, ReplacingMergeTree")
+	for _, w := range words {
+		if w != "x" {
+			t.Errorf("vocabulary word observed as identifier: %q", w)
+		}
+	}
+	if err := im.Build(); err != nil {
+		t.Fatal(err)
+	}
+	out := rw.Rewrite("ENGINE = ReplacingMergeTree ORDER BY sumIf", false)
+	for _, kept := range []string{"ReplacingMergeTree", "sumIf"} {
+		if !strings.Contains(out, kept) {
+			t.Errorf("vocabulary %q must survive rewrite: %s", kept, out)
+		}
+	}
+}
+
 func TestUnqualifiedColumnProbeOrder(t *testing.T) {
 	im, rw := fixture(t)
 	// "orders" appears as both nothing else; after a dot it must resolve as col first

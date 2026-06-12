@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -220,12 +221,14 @@ func (r *Run) observe(ctx context.Context) error {
 	}
 
 	// wave 2: SQL identifiers. The keep registry carries the cluster's own
-	// function + setting vocabulary so those words are never tokenized.
-	vocab, err := r.clusterVocab(ctx)
+	// function/setting/engine/type/format vocabulary so those words are never
+	// tokenized; combinators make sumIf/uniqArrayIf-style names vocabulary too.
+	vocab, combinators, err := r.clusterVocab(ctx)
 	if err != nil {
 		return err
 	}
 	r.Rw = sqllex.NewRewriter(im, sqllex.NewKeepRegistry(vocab))
+	r.Rw.Combinators = combinators
 	known := im.Known(sqllex.Probe)
 	observeSQL := func(text string) {
 		for _, w := range r.Rw.IdentifierWords(text) {
@@ -245,23 +248,35 @@ func (r *Run) observe(ctx context.Context) error {
 	return nil
 }
 
-func (r *Run) clusterVocab(ctx context.Context) ([]string, error) {
-	var vocab []string
+func (r *Run) clusterVocab(ctx context.Context) (vocab, combinators []string, err error) {
 	for _, q := range []string{
 		"SELECT name FROM system.functions",
 		"SELECT alias_to FROM system.functions WHERE alias_to != ''",
 		"SELECT name FROM system.settings",
 		"SELECT name FROM system.merge_tree_settings",
+		"SELECT name FROM system.table_engines",
+		"SELECT name FROM system.data_type_families",
+		"SELECT alias_to FROM system.data_type_families WHERE alias_to != ''",
+		"SELECT name FROM system.formats",
 	} {
 		rows, err := r.Ex.Query(ctx, q)
 		if err != nil {
-			return nil, fmt.Errorf("keep registry: %w", err)
+			return nil, nil, fmt.Errorf("keep registry: %w", err)
 		}
 		for _, row := range rows.Data {
 			vocab = append(vocab, str(row[0]))
 		}
 	}
-	return vocab, nil
+	rows, err := r.Ex.Query(ctx, "SELECT name FROM system.aggregate_function_combinators")
+	if err != nil {
+		return nil, nil, fmt.Errorf("keep registry: %w", err)
+	}
+	for _, row := range rows.Data {
+		if c := strings.ToUpper(str(row[0])); c != "" {
+			combinators = append(combinators, c)
+		}
+	}
+	return vocab, combinators, nil
 }
 
 // tok maps with fail-closed error wrapping.
@@ -335,7 +350,14 @@ func (r *Run) writeProfile(ctx context.Context) error {
 		role, conf := ClassifyRole(t)
 		demoted, reasons, flags := false, []string{}, []string{}
 		if h, ok := hotByFull[t.Full()]; ok {
-			demoted, reasons, flags = h.Demoted, h.DemoteReasons, h.ReviewFlags
+			demoted, reasons = h.Demoted, h.DemoteReasons
+			for _, fl := range h.ReviewFlags {
+				tf, err := r.tokenizeFlag(fl)
+				if err != nil {
+					return err
+				}
+				flags = append(flags, tf)
+			}
 		}
 		sbRows, sandboxed := r.SandboxRows[t.Full()]
 		catRows = append(catRows, []*string{
@@ -499,6 +521,27 @@ func (r *Run) writeProfile(ctx context.Context) error {
 	}
 	return r.St.Insert(ctx, "profile_conventions",
 		[]string{"run_id", "db_token", "table_token", "metric", "numerator", "denominator", "convention"}, cvRows)
+}
+
+// shadowFlagRe extracts the real base-table name a shadow-traffic review flag
+// references, so it can be tokenized before entering the LLM-readable profile.
+var shadowFlagRe = regexp.MustCompile(`^shadow-traffic-vs-([^:\s]+\.[^:\s]+)`)
+
+func (r *Run) tokenizeFlag(flag string) (string, error) {
+	m := shadowFlagRe.FindStringSubmatch(flag)
+	if m == nil {
+		return flag, nil
+	}
+	db, tbl, _ := strings.Cut(m[1], ".")
+	dbTok, err := r.tok("db", db)
+	if err != nil {
+		return "", err
+	}
+	tblTok, err := r.tok("tbl", tbl)
+	if err != nil {
+		return "", err
+	}
+	return strings.Replace(flag, m[1], dbTok+"."+tblTok, 1), nil
 }
 
 // manifest writes the completion marker — always LAST.
