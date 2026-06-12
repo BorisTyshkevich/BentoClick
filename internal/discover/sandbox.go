@@ -1,0 +1,254 @@
+// Sandbox materialization: per-token databases of physical token-named
+// tables holding masked data.
+//
+// Leak model: a materialized table's SHOW CREATE exposes only token columns +
+// engine. The masking expressions — which embed the value seed and real
+// table/column names — appear only in the trusted-side INSERT...SELECT below,
+// never in any object readable by the untrusted role. (This is why the
+// sandbox replaced live masking views: view bodies are readable by any
+// SELECT-granted user, verified on CH 26.3.)
+//
+// Safety: an object name is only ever created after (a) registering it in
+// generated_objects and (b) confirming any existing object with that name is
+// ours. We never DROP or replace a foreign object.
+package discover
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/Altinity/anon-discovery/internal/classify"
+)
+
+type colPlan struct {
+	Col      classify.Column
+	Class    classify.Class
+	Expr     string // trusted-side masking expression (contains seed + real name)
+	OutType  string
+	ColToken string
+	Include  bool
+}
+
+type tablePlan struct {
+	T       *Table
+	DBTok   string
+	TblTok  string
+	Cols    []colPlan
+	OrderBy []string // token names for the sandbox ORDER BY
+}
+
+// sandboxEligible: physical/queryable data surfaces only. Infra engines, MVs
+// and external engines are never materialized; plain views are skipped in v1
+// (materializing one executes arbitrary SQL — revisit deliberately).
+func sandboxEligible(t *Table) bool {
+	switch EngineFamily(t.Engine) {
+	case "mergetree", "distributed":
+		return true
+	}
+	return false
+}
+
+// writeMaskingPlan computes the per-column plan for every scope table, stores
+// it (REAL names — trusted side), and returns the plans for materialization.
+func (r *Run) writeMaskingPlan(ctx context.Context) ([]*tablePlan, error) {
+	seed := r.Minter.ValueSeed()
+	var plans []*tablePlan
+	var rows [][]*string
+	for _, t := range r.Tables {
+		dbTok, err := r.tok("db", t.Database)
+		if err != nil {
+			return nil, err
+		}
+		tblTok, err := r.tok("tbl", t.Name)
+		if err != nil {
+			return nil, err
+		}
+		p := &tablePlan{T: t, DBTok: dbTok, TblTok: tblTok}
+		for _, c := range t.Columns {
+			class := classify.Classify(c)
+			expr, outType, include := classify.MaskExpr(c, class, seed)
+			colTok, err := r.tok("col", c.Name)
+			if err != nil {
+				return nil, err
+			}
+			p.Cols = append(p.Cols, colPlan{
+				Col: c, Class: class, Expr: expr, OutType: outType,
+				ColToken: colTok, Include: include,
+			})
+			rows = append(rows, []*string{
+				s(r.RunID), s(t.Database), s(t.Name), s(c.Name),
+				s(string(class)), s(expr), b8x(include),
+			})
+		}
+		p.OrderBy = sandboxOrderBy(p)
+		plans = append(plans, p)
+	}
+	if err := r.St.Insert(ctx, "masking_plan",
+		[]string{"run_id", "database", "table", "column", "class", "transform", "included"}, rows); err != nil {
+		return nil, err
+	}
+	return plans, nil
+}
+
+// sandboxOrderBy maps the original sorting-key COLUMNS (bare names only;
+// expressions are skipped) to their token names, keeping only included
+// columns. Hashed keys still serve point lookups and joins; kept time columns
+// preserve range locality.
+func sandboxOrderBy(p *tablePlan) []string {
+	included := map[string]string{}
+	for _, cp := range p.Cols {
+		if cp.Include {
+			included[cp.Col.Name] = cp.ColToken
+		}
+	}
+	var out []string
+	for _, part := range strings.Split(p.T.SortingKey, ",") {
+		name := strings.TrimSpace(part)
+		name = strings.Trim(name, "`")
+		if tok, ok := included[name]; ok {
+			out = append(out, tok)
+		}
+	}
+	return out
+}
+
+// timeFilterCol picks a Date/DateTime column from the partition or sorting
+// key for window-bounded sampling, if any survives masking.
+func timeFilterCol(p *tablePlan) string {
+	for _, cp := range p.Cols {
+		if cp.Class == classify.ClassTime && (cp.Col.InPart || cp.Col.InSK) {
+			return cp.Col.Name
+		}
+	}
+	return ""
+}
+
+// ensureOurs aborts if an object with this name exists but is not registered
+// as ours. Returns whether the object already exists.
+func (r *Run) ensureOurs(ctx context.Context, kind, name, existsQuery string) (bool, error) {
+	rows, err := r.Ex.Query(ctx, existsQuery)
+	if err != nil {
+		return false, err
+	}
+	exists := len(rows.Data) > 0 && str(rows.Data[0][0]) != "0"
+	if !exists {
+		return false, nil
+	}
+	ours, err := r.St.IsRegistered(ctx, kind, name)
+	if err != nil {
+		return true, err
+	}
+	if !ours {
+		return true, fmt.Errorf("safety: %s %q already exists and was not created by this tool; aborting (never touch foreign objects)", kind, name)
+	}
+	return true, nil
+}
+
+func qident(name string) string {
+	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+}
+
+func sqlStr(v string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(v, `\`, `\\`), `'`, `\'`)
+}
+
+// sandbox materializes all eligible tables.
+func (r *Run) sandbox(ctx context.Context, plans []*tablePlan) error {
+	for _, p := range plans {
+		if !sandboxEligible(p.T) {
+			continue
+		}
+		var cols, exprs []string
+		for _, cp := range p.Cols {
+			if !cp.Include {
+				continue
+			}
+			cols = append(cols, fmt.Sprintf("%s %s", cp.ColToken, cp.OutType))
+			exprs = append(exprs, fmt.Sprintf("%s AS %s", cp.Expr, cp.ColToken))
+		}
+		if len(cols) == 0 {
+			r.Notes = append(r.Notes, fmt.Sprintf("table %s.%s: all columns excluded, no sandbox table", p.DBTok, p.TblTok))
+			continue
+		}
+		orderBy := "tuple()"
+		if len(p.OrderBy) > 0 {
+			orderBy = strings.Join(p.OrderBy, ", ")
+		}
+
+		// database
+		dbExists := fmt.Sprintf("SELECT count() FROM system.databases WHERE name = '%s'", sqlStr(p.DBTok))
+		if _, err := r.ensureOurs(ctx, "database", p.DBTok, dbExists); err != nil {
+			return err
+		}
+		if err := r.St.RegisterObject(ctx, r.RunID, "database", p.DBTok); err != nil {
+			return err
+		}
+		if err := r.Ex.Exec(ctx, "CREATE DATABASE IF NOT EXISTS "+qident(p.DBTok)); err != nil {
+			return err
+		}
+
+		// table (recreate OUR OWN table for refresh; foreign names abort above)
+		fullTok := p.DBTok + "." + p.TblTok
+		tblExists := fmt.Sprintf("SELECT count() FROM system.tables WHERE database = '%s' AND name = '%s'",
+			sqlStr(p.DBTok), sqlStr(p.TblTok))
+		exists, err := r.ensureOurs(ctx, "table", fullTok, tblExists)
+		if err != nil {
+			return err
+		}
+		if err := r.St.RegisterObject(ctx, r.RunID, "table", fullTok); err != nil {
+			return err
+		}
+		if exists {
+			if err := r.Ex.Exec(ctx, fmt.Sprintf("DROP TABLE %s.%s", qident(p.DBTok), qident(p.TblTok))); err != nil {
+				return err
+			}
+		}
+		create := fmt.Sprintf("CREATE TABLE %s.%s (%s) ENGINE = MergeTree ORDER BY (%s)",
+			qident(p.DBTok), qident(p.TblTok), strings.Join(cols, ", "), orderBy)
+		if err := r.Ex.Exec(ctx, create); err != nil {
+			return fmt.Errorf("sandbox create %s: %w", fullTok, err)
+		}
+
+		// populate — the ONLY place masking expressions (seed + real names) appear
+		where := ""
+		if tc := timeFilterCol(p); tc != "" {
+			where = fmt.Sprintf(" WHERE %s >= now() - INTERVAL %d DAY", qident(tc), r.Cfg.WindowDays)
+		}
+		insert := fmt.Sprintf("INSERT INTO %s.%s SELECT %s FROM %s.%s%s LIMIT %d",
+			qident(p.DBTok), qident(p.TblTok), strings.Join(exprs, ", "),
+			qident(p.T.Database), qident(p.T.Name), where, r.Cfg.SampleRows)
+		if err := r.Ex.Exec(ctx, insert); err != nil {
+			// Per-table failure (exotic type, permissions) must not kill the
+			// run: record and continue; the table simply isn't sandboxed.
+			r.Notes = append(r.Notes, fmt.Sprintf("sandbox populate failed for %s: %s", fullTok, firstLine(err.Error())))
+			continue
+		}
+		cnt, err := r.Ex.Query(ctx, fmt.Sprintf("SELECT count() FROM %s.%s", qident(p.DBTok), qident(p.TblTok)))
+		if err != nil {
+			return err
+		}
+		r.SandboxRows[p.T.Full()] = u64(cnt.Data[0][0])
+	}
+	if r.Cfg.SampleRows > 0 {
+		r.Notes = append(r.Notes, fmt.Sprintf("sandbox sampled at most %d rows per table (time-window filter when a key time column exists, else first-N): distributions of larger tables are biased", r.Cfg.SampleRows))
+	}
+	return nil
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+func s(v string) *string { return &v }
+
+func b8x(v bool) *string {
+	out := "0"
+	if v {
+		out = "1"
+	}
+	return &out
+}
