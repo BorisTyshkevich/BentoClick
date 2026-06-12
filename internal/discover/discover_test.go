@@ -163,11 +163,11 @@ func TestClassifyRole(t *testing.T) {
 
 func TestParseStrArray(t *testing.T) {
 	cases := map[string][]string{
-		"['a','b']":        {"a", "b"},
-		"[]":               nil,
-		"['with\\'q']":     {"with'q"},
-		"['x']":            {"x"},
-		"not-an-array":     nil,
+		"['a','b']":    {"a", "b"},
+		"[]":           nil,
+		"['with\\'q']": {"with'q"},
+		"['x']":        {"x"},
+		"not-an-array": nil,
 	}
 	for in, want := range cases {
 		got := parseStrArray(in)
