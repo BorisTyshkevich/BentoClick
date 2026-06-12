@@ -307,26 +307,66 @@ The candidates:
 | Storage / jobs | none | none | tables + refresh | none |
 | Complexity | medium (rewriter = TCB) | low-medium (DDL generation) | medium-high | trivial |
 
-**Decision: B core, C upgrade, A demoted, D rejected, E optional.**
+#### Seed-leak hazard and the two-layer view pattern (verified live, CH 26.3)
 
-1. **v1**: discovery job autogenerates the token-named DEFINER-security
-   views DB from the masking plan. One mechanism = identifier
-   anonymization + value masking + RBAC enforcement;
-   `describe_table`/`sample_table` become thin wrappers over it.
-2. **Phase 2**: materialize the obfuscated sandbox for the Pareto-hot
-   tables (discovery knows which), fixing B's two real gaps: prod load
-   and full-scan masked predicates on large tables. Hybrid: views for
-   breadth, sandbox for the hot set. Natural staging ground for the
-   compose → validate → promote loop.
-3. The Go rewriter remains only on low-frequency, reviewable paths:
+A single-layer masking view leaks its own secrets: any user with SELECT on a
+view can read its body via `SHOW CREATE VIEW` and
+`system.tables.create_table_query` / `as_select`. `SQL SECURITY DEFINER`
+only changes whose privileges the inner query runs with — the text stays
+readable, and `REVOKE SHOW` cannot remove it (SHOW is implicitly granted
+with any privilege). ClickHouse's secret-hiding machinery
+(`format_display_secrets_*`) covers credential fields (S3 keys etc.), not
+arbitrary literals in view bodies. So a view containing
+`sipHash64(<seed literal>, real_col)` hands the untrusted role both the
+**value seed** (making hashed join keys and label tokens
+dictionary-attackable: enumerate plausible ids/emails, hash, match) and the
+**real table/column names**.
+
+Verified fix — **two layers**:
+
+1. **Private inner view** (real names + seed + masking expressions) lives in
+   a private database (`altinity_private`) on which the untrusted role has
+   **zero grants** — confirmed invisible: `system.tables` returns 0 rows for
+   it, direct `SHOW CREATE` is denied.
+2. **Public token view**: `CREATE VIEW db_<tok>.tbl_<tok> SQL SECURITY
+   DEFINER AS SELECT * FROM altinity_private.<inner>` — the visible body
+   contains only token names and the private-DB reference.
+
+Incidental finding (also verified on 26.3): the analyzer rejects
+`CREATE VIEW v (col_tok) AS SELECT <expr> …` — a view column list does not
+rename expressions; every masking expression must be **explicitly aliased**
+(`<expr> AS col_tok`) in the inner view.
+
+**Decision (revised after the seed-leak verification): C core, B demoted
+to optional live-view mode, A demoted, D rejected, E optional.**
+
+The seed-leak fix costs B its main advantage. Two-layer views, a private
+database, and an invisibility test are required just to make B *safe* —
+and B still keeps its other two weaknesses (prod-table load from
+exploration, full-scan masked predicates). The sandbox already won on
+those, and it gets the leak-resistance **structurally**: a materialized
+table's `SHOW CREATE` exposes only token columns + engine; the masking
+expressions (seed + real names) exist only in the job's INSERT…SELECT on
+the trusted side, never in any object the untrusted role can read.
+
+1. **v1 — materialized sandbox**: the discovery job creates per-token
+   databases (`db_<tok>`) of physical token-named tables
+   (`tbl_<tok> (col_<tok> …) ENGINE = MergeTree ORDER BY <masked sorting
+   key>`), populated by `INSERT … SELECT <mask exprs> FROM real_db.real_tbl`
+   with bounded rows. Indexes work on masked predicates, prod tables see
+   exploration load zero times (only the one-shot materialization scan),
+   enforcement is plain grants on the sandbox DBs.
+2. **Refresh = re-run** of the job (registered objects recreated);
+   staleness recorded in the manifest. Sampling: time-window filter when
+   a Date/DateTime column is in the partition/sorting key, else LIMIT;
+   the bias is recorded in the manifest (no silent caps).
+3. **B (two-layer live views)** remains documented as an optional mode
+   for deployments that need always-fresh data and accept the load
+   profile — never single-layer.
+4. The Go rewriter remains only on low-frequency, reviewable paths:
    tokenizing mined query shapes/DDL for the profile, and de-tokenizing
    staged artifacts for trusted execution — never the per-query security
    boundary.
-
-Early verification item: `SQL SECURITY DEFINER` view behavior on the
-target Altinity build range. Pre-24.4 clusters can't do B without
-granting the LLM role on real tables (breaks the model) — those
-deployments would be **sandbox-only**.
 
 Open question: whether `CREATE MASKING POLICY` is in OSS/Altinity builds
 or Cloud-only. If Cloud-only, the masked-view/generated-SELECT path is the
@@ -396,9 +436,12 @@ Exact DDL is deliberately out of scope for v0 discussion.
    for values.
 7. This branch is a standalone experiment (orphan branch), candidate fork.
 8. **OSS-only**: Cloud masking policies ruled out. Value-masking
-   mechanism = token-named DEFINER views DB (B) as core, obfuscated
-   sandbox (C) as phase-2 upgrade; result post-processing rejected
-   (fails open); enforcement is CH RBAC, never the Go rewriter (§5.3.1).
+   mechanism = **materialized token-named sandbox (C) as v1 core**
+   (revised after live verification that view bodies leak seed + real
+   names to any SELECT-granted role; the two-layer fix erased B's
+   simplicity advantage). B survives as an optional two-layer live-view
+   mode; result post-processing rejected (fails open); enforcement is
+   CH RBAC, never the Go rewriter (§5.3.1).
 
 ## 9. Open questions
 
