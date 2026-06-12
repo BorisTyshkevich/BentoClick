@@ -25,7 +25,13 @@ func TestClassify(t *testing.T) {
 		{Column{Name: "country", Type: "LowCardinality(String)"}, ClassLabel},
 		{Column{Name: "comment", Type: "String"}, ClassFreeText},
 		{Column{Name: "payload", Type: "JSON"}, ClassSchemaless},
-		{Column{Name: "attrs", Type: "Map(String, String)"}, ClassSchemaless},
+		{Column{Name: "attrs", Type: "Map(String, String)"}, ClassAttrMap},
+		{Column{Name: "ResourceAttributes", Type: "Map(LowCardinality(String), String)"}, ClassAttrMap},
+		// pure-value map: KEY is String but values aren't maskable per-value — fail closed in v1
+		{Column{Name: "counts", Type: "Map(String, UInt64)"}, ClassSchemaless},
+		{Column{Name: "by_id", Type: "Map(UInt64, String)"}, ClassSchemaless},
+		{Column{Name: "opt_attrs", Type: "Map(String, Nullable(String))"}, ClassSchemaless},
+		{Column{Name: "lc_attrs", Type: "Map(String, LowCardinality(String))"}, ClassSchemaless},
 		{Column{Name: "tags", Type: "Array(String)"}, ClassSchemaless},
 		{Column{Name: "vals", Type: "Array(UInt64)"}, ClassMeasure}, // pure-value complex: keep
 		{Column{Name: "dyn", Type: "Dynamic"}, ClassSchemaless},
@@ -69,6 +75,21 @@ func TestMaskExprShapes(t *testing.T) {
 	expr, _, _ = MaskExpr(Column{Name: "comment", Type: "String"}, ClassFreeText, seed)
 	if expr != "'[redacted]'" {
 		t.Errorf("freetext expr: %s", expr)
+	}
+
+	// attrmap: keys verbatim, values per-value-masked, K type preserved
+	expr, outType, inc = MaskExpr(
+		Column{Name: "ResourceAttributes", Type: "Map(LowCardinality(String), String)"}, ClassAttrMap, seed)
+	if !inc {
+		t.Error("attrmap must be included")
+	}
+	if outType != "Map(LowCardinality(String), String)" {
+		t.Errorf("attrmap type: %s", outType)
+	}
+	for _, frag := range []string{"mapFromArrays", "mapKeys", "arrayMap", "sipHash64(3735928559, v)"} {
+		if !strings.Contains(expr, frag) {
+			t.Errorf("attrmap expr missing %q: %s", frag, expr)
+		}
 	}
 
 	// schemaless excluded

@@ -28,9 +28,19 @@ import (
 )
 
 type Config struct {
-	Connection   string
+	// Source and Dest are whitespace-split command prefixes that accept
+	// clickhouse-client flags, e.g. "cl otel" / "clickhouse-client
+	// --connection demo". Equal strings mean single-cluster mode.
+	Source string
+	Dest   string
+	// SourceDB is the ONE database to mirror (required).
+	SourceDB string
+	// DestDB names the sandbox database on the dest cluster. Default =
+	// SourceDB ("mirror" semantics) — which discloses the DB name (see the
+	// disclosure rule in observe). Tables/columns inside are always
+	// token-named regardless.
+	DestDB       string
 	MetaDB       string
-	Databases    []string // empty = all business DBs
 	WindowDays   int
 	SampleRows   uint64
 	ServiceUsers []string
@@ -40,9 +50,12 @@ type Config struct {
 }
 
 type Run struct {
-	Cfg Config
-	Ex  chclient.Executor
-	St  *store.Store
+	Cfg   Config
+	SrcEx chclient.Executor // discovery, mining, masking SELECTs (real names stay here)
+	DstEx chclient.Executor // sandbox objects + tokens-only profile
+
+	SrcStore *store.Store // trusted tables (identifier_map, masking_plan) on the source meta DB
+	DstStore *store.Store // profile tables + registry + manifest on the dest meta DB
 
 	RunID    string
 	Version  string
@@ -68,7 +81,16 @@ type Run struct {
 	started time.Time
 }
 
-func NewRun(cfg Config, ex chclient.Executor) (*Run, error) {
+// NewRun wires a run over injected executors (testability: fakes go here).
+// The same meta-DB name is used on both clusters; the store split decides
+// which tables exist where.
+func NewRun(cfg Config, src, dst chclient.Executor) (*Run, error) {
+	if cfg.SourceDB == "" {
+		return nil, fmt.Errorf("discover: SourceDB is required")
+	}
+	if cfg.DestDB == "" {
+		cfg.DestDB = cfg.SourceDB
+	}
 	if cfg.WindowDays <= 0 {
 		cfg.WindowDays = 7
 	}
@@ -78,6 +100,9 @@ func NewRun(cfg Config, ex chclient.Executor) (*Run, error) {
 	if cfg.MetaDB == "" {
 		cfg.MetaDB = "altinity"
 	}
+	if cfg.DestDB == cfg.MetaDB {
+		return nil, fmt.Errorf("discover: DestDB %q collides with the meta DB", cfg.DestDB)
+	}
 	if cfg.Log == nil {
 		cfg.Log = func(string, ...any) {}
 	}
@@ -86,7 +111,9 @@ func NewRun(cfg Config, ex chclient.Executor) (*Run, error) {
 		return nil, err
 	}
 	return &Run{
-		Cfg: cfg, Ex: ex, St: store.New(ex, cfg.MetaDB),
+		Cfg: cfg, SrcEx: src, DstEx: dst,
+		SrcStore:    store.New(src, cfg.MetaDB),
+		DstStore:    store.New(dst, cfg.MetaDB),
 		Shape:       map[string]string{},
 		byFull:      map[string]*Table{},
 		Minter:      m,
@@ -102,7 +129,10 @@ func (r *Run) Execute(ctx context.Context) error {
 	log := r.Cfg.Log
 
 	if !r.Cfg.DryRun {
-		if err := r.St.Init(ctx); err != nil {
+		if err := r.SrcStore.InitTrusted(ctx); err != nil {
+			return err
+		}
+		if err := r.DstStore.InitProfile(ctx); err != nil {
 			return err
 		}
 	}
@@ -185,6 +215,19 @@ func (r *Run) observe(ctx context.Context) error {
 	im.KeepVerbatim("db", "default")
 	im.KeepVerbatim("db", "system")
 
+	// DB-name disclosure rule: naming the dest sandbox database after the
+	// source database is an operator decision to disclose that one name, so
+	// the profile keeps it verbatim and agrees with the sandbox. Any other
+	// dest name keeps the source DB tokenized. Tables and columns are
+	// token-named either way.
+	if r.Cfg.DestDB == r.Cfg.SourceDB {
+		im.KeepVerbatim("db", r.Cfg.SourceDB)
+		r.Shape["db_disclosure"] = "disclosed"
+		r.Notes = append(r.Notes, "source DB name disclosed by operator choice (dest db = source db)")
+	} else {
+		r.Shape["db_disclosure"] = "tokenized"
+	}
+
 	for _, t := range r.Tables {
 		im.Observe("db", t.Database)
 		im.Observe("tbl", t.Name)
@@ -214,7 +257,7 @@ func (r *Run) observe(ctx context.Context) error {
 		im.Observe("col", hc.Column)
 	}
 	// cluster names
-	if rows, err := r.Ex.Query(ctx, "SELECT DISTINCT cluster FROM system.clusters"); err == nil {
+	if rows, err := r.SrcEx.Query(ctx, "SELECT DISTINCT cluster FROM system.clusters"); err == nil {
 		for _, row := range rows.Data {
 			im.Observe("cluster", str(row[0]))
 		}
@@ -259,7 +302,7 @@ func (r *Run) clusterVocab(ctx context.Context) (vocab, combinators []string, er
 		"SELECT alias_to FROM system.data_type_families WHERE alias_to != ''",
 		"SELECT name FROM system.formats",
 	} {
-		rows, err := r.Ex.Query(ctx, q)
+		rows, err := r.SrcEx.Query(ctx, q)
 		if err != nil {
 			return nil, nil, fmt.Errorf("keep registry: %w", err)
 		}
@@ -267,7 +310,7 @@ func (r *Run) clusterVocab(ctx context.Context) (vocab, combinators []string, er
 			vocab = append(vocab, str(row[0]))
 		}
 	}
-	rows, err := r.Ex.Query(ctx, "SELECT name FROM system.aggregate_function_combinators")
+	rows, err := r.SrcEx.Query(ctx, "SELECT name FROM system.aggregate_function_combinators")
 	if err != nil {
 		return nil, nil, fmt.Errorf("keep registry: %w", err)
 	}
@@ -306,14 +349,15 @@ func b8(v bool) *string {
 	return &s
 }
 
-// writeProfile emits all tokenized profile rows plus the identifier map.
+// writeProfile emits all tokenized profile rows (dest) plus the identifier
+// map (source — trusted side only).
 func (r *Run) writeProfile(ctx context.Context) error {
-	// identifier_map (trusted side)
+	// identifier_map (trusted side: SOURCE meta DB only)
 	var mapRows [][]*string
 	for _, p := range r.IdMap.Pairs() {
 		mapRows = append(mapRows, []*string{chclient.S(r.RunID), chclient.S(p[0]), chclient.S(p[1]), chclient.S(p[2])})
 	}
-	if err := r.St.Insert(ctx, "identifier_map", []string{"run_id", "kind", "original", "token"}, mapRows); err != nil {
+	if err := r.SrcStore.Insert(ctx, "identifier_map", []string{"run_id", "kind", "original", "token"}, mapRows); err != nil {
 		return err
 	}
 
@@ -327,7 +371,7 @@ func (r *Run) writeProfile(ctx context.Context) error {
 	for _, k := range keys {
 		shapeRows = append(shapeRows, []*string{chclient.S(r.RunID), chclient.S(k), chclient.S(r.Shape[k])})
 	}
-	if err := r.St.Insert(ctx, "profile_shape", []string{"run_id", "key", "value"}, shapeRows); err != nil {
+	if err := r.DstStore.Insert(ctx, "profile_shape", []string{"run_id", "key", "value"}, shapeRows); err != nil {
 		return err
 	}
 
@@ -383,14 +427,14 @@ func (r *Run) writeProfile(ctx context.Context) error {
 			})
 		}
 	}
-	if err := r.St.Insert(ctx, "profile_catalog",
+	if err := r.DstStore.Insert(ctx, "profile_catalog",
 		[]string{"run_id", "db_token", "table_token", "engine", "engine_family",
 			"sorting_key_tok", "partition_key_tok", "total_rows", "total_bytes",
 			"role", "role_confidence", "demoted", "demote_reasons", "review_flags",
 			"sandboxed", "sandbox_rows"}, catRows); err != nil {
 		return err
 	}
-	if err := r.St.Insert(ctx, "profile_columns",
+	if err := r.DstStore.Insert(ctx, "profile_columns",
 		[]string{"run_id", "db_token", "table_token", "col_token", "position",
 			"type_tok", "class", "in_pk", "in_sk", "in_part", "included"}, colRows); err != nil {
 		return err
@@ -428,7 +472,7 @@ func (r *Run) writeProfile(ctx context.Context) error {
 			chclient.S(detail),
 		})
 	}
-	if err := r.St.Insert(ctx, "profile_relations",
+	if err := r.DstStore.Insert(ctx, "profile_relations",
 		[]string{"run_id", "rel_kind", "src_db_tok", "src_tbl_tok", "dst_db_tok", "dst_tbl_tok", "detail"},
 		relRows); err != nil {
 		return err
@@ -470,7 +514,7 @@ func (r *Run) writeProfile(ctx context.Context) error {
 			chclient.S(store.ChArray(usersTok)),
 		})
 	}
-	if err := r.St.Insert(ctx, "profile_workload",
+	if err := r.DstStore.Insert(ctx, "profile_workload",
 		[]string{"run_id", "db_token", "table_token", "execs", "total_ms", "sels", "ins", "users_tok"},
 		wRows); err != nil {
 		return err
@@ -489,7 +533,7 @@ func (r *Run) writeProfile(ctx context.Context) error {
 			chclient.S(r.RunID), chclient.S(dbTok), chclient.S(tblTok), chclient.S(colTok), u64s(hc.Touches),
 		})
 	}
-	if err := r.St.Insert(ctx, "profile_hot_columns",
+	if err := r.DstStore.Insert(ctx, "profile_hot_columns",
 		[]string{"run_id", "db_token", "table_token", "col_token", "touches"}, hcRows); err != nil {
 		return err
 	}
@@ -504,7 +548,7 @@ func (r *Run) writeProfile(ctx context.Context) error {
 			chclient.S(q.Hash), chclient.S(r.Rw.Rewrite(q.Normalized, false)), u64s(q.Execs),
 		})
 	}
-	if err := r.St.Insert(ctx, "profile_queries",
+	if err := r.DstStore.Insert(ctx, "profile_queries",
 		[]string{"run_id", "db_token", "table_token", "query_hash", "query_tok", "execs"}, qRows); err != nil {
 		return err
 	}
@@ -519,7 +563,7 @@ func (r *Run) writeProfile(ctx context.Context) error {
 			chclient.S(cv.Metric), u64s(cv.Numerator), u64s(cv.Denominator), chclient.S(cv.Convention),
 		})
 	}
-	return r.St.Insert(ctx, "profile_conventions",
+	return r.DstStore.Insert(ctx, "profile_conventions",
 		[]string{"run_id", "db_token", "table_token", "metric", "numerator", "denominator", "convention"}, cvRows)
 }
 
@@ -544,7 +588,13 @@ func (r *Run) tokenizeFlag(flag string) (string, error) {
 	return strings.Replace(flag, m[1], dbTok+"."+tblTok, 1), nil
 }
 
-// manifest writes the completion marker — always LAST.
+// manifest writes the completion marker — always LAST. It lands on the DEST
+// meta DB, which the LLM-facing read path can see, so everything in it must
+// be tokens or operator-disclosed values: scope_databases carries the DB
+// TOKEN (== the real name only under the disclosure rule), the stats JSON
+// records dest_db (the operator-named sandbox DB, which `anond verify` reads
+// back to locate the sandbox), and connection records only the dest command —
+// the source command could name the customer cluster.
 func (r *Run) manifest(ctx context.Context) error {
 	stats := map[string]any{
 		"tables":         len(r.Tables),
@@ -554,14 +604,24 @@ func (r *Run) manifest(ctx context.Context) error {
 		"map_collisions": r.IdMap.Collisions,
 		"sandboxed":      len(r.SandboxRows),
 		"version":        r.Version,
+		"dest_db":        r.Cfg.DestDB,
+		"db_disclosure":  r.Shape["db_disclosure"],
 	}
 	js, _ := json.Marshal(stats)
-	return r.St.WriteManifest(ctx, r.RunID, map[string]string{
+	scopeToks := make([]string, 0, len(r.ScopeDBs))
+	for _, d := range r.ScopeDBs {
+		tok, err := r.tok("db", d)
+		if err != nil {
+			return err
+		}
+		scopeToks = append(scopeToks, tok)
+	}
+	return r.DstStore.WriteManifest(ctx, r.RunID, map[string]string{
 		"started":     r.started.Format("2006-01-02 15:04:05"),
 		"finished":    time.Now().UTC().Format("2006-01-02 15:04:05"),
-		"connection":  r.Cfg.Connection,
+		"connection":  r.Cfg.Dest,
 		"window_days": strconv.Itoa(r.Cfg.WindowDays),
 		"sample_rows": strconv.FormatUint(r.Cfg.SampleRows, 10),
 		"stats":       string(js),
-	}, r.ScopeDBs, r.Notes)
+	}, scopeToks, r.Notes)
 }

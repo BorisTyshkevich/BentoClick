@@ -462,6 +462,59 @@ Exact DDL is deliberately out of scope for v0 discussion.
    become a separate binary/fork sharing packages? (This branch exists to
    find out.)
 
+## 10. v1.1 — cross-cluster (implemented on this branch)
+
+v1 proved the pipeline on a single cluster. v1.1 pivots to the real
+deployment shape: **discover and mask on the SOURCE cluster, materialize the
+sandbox and the LLM-readable profile on a separate DEST cluster** — the dest
+is the only thing LLM users ever touch.
+
+Decisions:
+
+1. **Single-DB mirror semantics.** The database is the CLI's primary object:
+   `anond run --source "cl otel" --source-db claude_otel --dest
+   "clickhouse-client --connection demo" --dest-db claude_otel`. The
+   multi-DB `--databases` scope is gone; one run mirrors exactly one
+   database into one operator-named sandbox database on the dest (no more
+   per-token `db_<tok>` databases). Tables/columns inside stay token-named.
+2. **Operator-named dest DB + disclosure rule.** If `--dest-db` equals the
+   source DB name (the default), the operator has disclosed that one name:
+   the profile keeps it verbatim (`KeepVerbatim("db", name)`) so profile and
+   sandbox agree; otherwise the source DB name stays tokenized. Recorded in
+   `profile_shape` (`db_disclosure`) and the manifest stats. Consequence for
+   cleanup: the token-pattern filter for DB names is gone — registry-listed
+   ⇒ ours (guaranteed by the create-time ensureOurs abort), plus a hard
+   refusal on `system`/`default`/`INFORMATION_SCHEMA`.
+3. **Trusted split.** `identifier_map` + `masking_plan` (real names) live
+   ONLY on the source cluster's meta DB; the dest meta DB gets the
+   tokens-only `profile_*` tables, `generated_objects`, and `manifest`. Both
+   the run's verify phase and `anond verify` hard-fail if a trusted table
+   exists on the dest (cross-cluster mode only — single-cluster shares one
+   meta DB). `anond verify` reads the sandbox DB name back from the manifest
+   stats JSON (`dest_db`); the manifest stores the dest command and DB
+   tokens only, since it is LLM-readable.
+4. **Streaming materialization.** Sandbox populate = source-side
+   `SELECT <mask exprs> … FORMAT TSV` piped process-to-process into a dest
+   `INSERT … FORMAT TSV`. The masking expressions (value seed + real names)
+   exist only in source-side queries → source query_log only. Masked output
+   types parse back from TSV by construction (kept types identical; hashed →
+   UInt64/String; attrmap → `Map(K, String)`).
+5. **log_comment self-footprint exclusion.** Every anond query carries
+   `--log_comment anond`. New leak vector in cross-cluster mode: masking
+   SELECTs run on the source and reference only real tables, so v1's
+   token-DB mining filter cannot exclude them — yet they carry the seed and
+   `AS col_<tok>` aliases; unfiltered, the next run's observe wave would see
+   the aliases and the reserved-namespace guard would abort. Mining now adds
+   `AND log_comment != 'anond'` and keeps the token-DB/meta-DB filter
+   (defense in depth + the single-cluster case).
+6. **Map masking** (`ClassAttrMap`). `Map(String|LowCardinality(String),
+   String)` attribute columns (OTel ResourceAttributes/LogAttributes — most
+   of the signal) get a class instead of the fail-closed drop: keys kept
+   verbatim (semconv vocabulary; custom key names passing through is an
+   accepted, documented residual), values masked per-value (numerics /
+   booleans / empties kept, else a 12-hex keyed hash). Other string-bearing
+   complex types remain fail-closed schemaless.
+
 ## References
 
 - `altinity-skills/altinity-profiler-clickhouse` — the LLM profiler

@@ -1,16 +1,17 @@
-// Sandbox materialization: per-token databases of physical token-named
-// tables holding masked data.
+// Sandbox materialization: ONE operator-named database on the DEST cluster
+// holding physical token-named tables of masked data, populated by streaming
+// masked TSV from the source cluster.
 //
 // Leak model: a materialized table's SHOW CREATE exposes only token columns +
 // engine. The masking expressions — which embed the value seed and real
-// table/column names — appear only in the trusted-side INSERT...SELECT below,
-// never in any object readable by the untrusted role. (This is why the
-// sandbox replaced live masking views: view bodies are readable by any
-// SELECT-granted user, verified on CH 26.3.)
+// table/column names — appear only in SELECTs executed on the SOURCE cluster
+// (its query_log is trusted), never in any object or log on the dest cluster.
+// (This is why the sandbox replaced live masking views: view bodies are
+// readable by any SELECT-granted user, verified on CH 26.3.)
 //
-// Safety: an object name is only ever created after (a) registering it in
-// generated_objects and (b) confirming any existing object with that name is
-// ours. We never DROP or replace a foreign object.
+// Safety: an object name is only ever created after (a) registering it in the
+// dest registry (generated_objects) and (b) confirming any existing object
+// with that name is ours. We never DROP or replace a foreign object.
 package discover
 
 import (
@@ -84,7 +85,8 @@ func (r *Run) writeMaskingPlan(ctx context.Context) ([]*tablePlan, error) {
 		p.OrderBy = sandboxOrderBy(p)
 		plans = append(plans, p)
 	}
-	if err := r.St.Insert(ctx, "masking_plan",
+	// trusted side: the plan carries real names + masking expressions → SOURCE
+	if err := r.SrcStore.Insert(ctx, "masking_plan",
 		[]string{"run_id", "database", "table", "column", "class", "transform", "included"}, rows); err != nil {
 		return nil, err
 	}
@@ -124,10 +126,11 @@ func timeFilterCol(p *tablePlan) string {
 	return ""
 }
 
-// ensureOurs aborts if an object with this name exists but is not registered
-// as ours. Returns whether the object already exists.
+// ensureOurs aborts if an object with this name exists on the DEST cluster
+// but is not registered in the dest registry. Returns whether the object
+// already exists.
 func (r *Run) ensureOurs(ctx context.Context, kind, name, existsQuery string) (bool, error) {
-	rows, err := r.Ex.Query(ctx, existsQuery)
+	rows, err := r.DstEx.Query(ctx, existsQuery)
 	if err != nil {
 		return false, err
 	}
@@ -135,7 +138,7 @@ func (r *Run) ensureOurs(ctx context.Context, kind, name, existsQuery string) (b
 	if !exists {
 		return false, nil
 	}
-	ours, err := r.St.IsRegistered(ctx, kind, name)
+	ours, err := r.DstStore.IsRegistered(ctx, kind, name)
 	if err != nil {
 		return true, err
 	}
@@ -153,8 +156,11 @@ func sqlStr(v string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(v, `\`, `\\`), `'`, `\'`)
 }
 
-// sandbox materializes all eligible tables.
+// sandbox materializes all eligible tables into the single operator-named
+// dest database, streaming masked rows source→dest.
 func (r *Run) sandbox(ctx context.Context, plans []*tablePlan) error {
+	sbDB := r.Cfg.DestDB
+	dbReady := false
 	for _, p := range plans {
 		if !sandboxEligible(p.T) {
 			continue
@@ -176,48 +182,72 @@ func (r *Run) sandbox(ctx context.Context, plans []*tablePlan) error {
 			orderBy = strings.Join(p.OrderBy, ", ")
 		}
 
-		// database
-		dbExists := fmt.Sprintf("SELECT count() FROM system.databases WHERE name = '%s'", sqlStr(p.DBTok))
-		if _, err := r.ensureOurs(ctx, "database", p.DBTok, dbExists); err != nil {
-			return err
-		}
-		if err := r.St.RegisterObject(ctx, r.RunID, "database", p.DBTok); err != nil {
-			return err
-		}
-		if err := r.Ex.Exec(ctx, "CREATE DATABASE IF NOT EXISTS "+qident(p.DBTok)); err != nil {
-			return err
+		// database (once; operator-named, so the registry — not a token
+		// pattern — is what marks it ours)
+		if !dbReady {
+			dbExists := fmt.Sprintf("SELECT count() FROM system.databases WHERE name = '%s'", sqlStr(sbDB))
+			if _, err := r.ensureOurs(ctx, "database", sbDB, dbExists); err != nil {
+				return err
+			}
+			if err := r.DstStore.RegisterObject(ctx, r.RunID, "database", sbDB); err != nil {
+				return err
+			}
+			if err := r.DstEx.Exec(ctx, "CREATE DATABASE IF NOT EXISTS "+qident(sbDB)); err != nil {
+				return err
+			}
+			dbReady = true
 		}
 
 		// table (recreate OUR OWN table for refresh; foreign names abort above)
-		fullTok := p.DBTok + "." + p.TblTok
+		fullTok := sbDB + "." + p.TblTok
 		tblExists := fmt.Sprintf("SELECT count() FROM system.tables WHERE database = '%s' AND name = '%s'",
-			sqlStr(p.DBTok), sqlStr(p.TblTok))
+			sqlStr(sbDB), sqlStr(p.TblTok))
 		exists, err := r.ensureOurs(ctx, "table", fullTok, tblExists)
 		if err != nil {
 			return err
 		}
-		if err := r.St.RegisterObject(ctx, r.RunID, "table", fullTok); err != nil {
+		if err := r.DstStore.RegisterObject(ctx, r.RunID, "table", fullTok); err != nil {
 			return err
 		}
 		if exists {
-			if err := r.Ex.Exec(ctx, fmt.Sprintf("DROP TABLE %s.%s", qident(p.DBTok), qident(p.TblTok))); err != nil {
+			if err := r.DstEx.Exec(ctx, fmt.Sprintf("DROP TABLE %s.%s", qident(sbDB), qident(p.TblTok))); err != nil {
 				return err
 			}
 		}
 		create := fmt.Sprintf("CREATE TABLE %s.%s (%s) ENGINE = MergeTree ORDER BY (%s)",
-			qident(p.DBTok), qident(p.TblTok), strings.Join(cols, ", "), orderBy)
-		if err := r.Ex.Exec(ctx, create); err != nil {
+			qident(sbDB), qident(p.TblTok), strings.Join(cols, ", "), orderBy)
+		if err := r.DstEx.Exec(ctx, create); err != nil {
 			return fmt.Errorf("sandbox create %s: %w", fullTok, err)
 		}
 
-		// populate — the ONLY place masking expressions (seed + real names) appear
-		insert := func(where string) error {
-			return r.Ex.Exec(ctx, fmt.Sprintf("INSERT INTO %s.%s SELECT %s FROM %s.%s%s LIMIT %d",
-				qident(p.DBTok), qident(p.TblTok), strings.Join(exprs, ", "),
-				qident(p.T.Database), qident(p.T.Name), where, r.Cfg.SampleRows))
+		// populate — the masked SELECT (seed + real names) runs on the SOURCE;
+		// only masked TSV crosses to the dest. Positional insert: the SELECT
+		// emits the included columns in table-definition order. Output types
+		// parse back from TSV by construction (kept types are identical;
+		// hashed → UInt64/String; attrmap → Map(K, String)).
+		populate := func(where string) error {
+			sel := fmt.Sprintf("SELECT %s FROM %s.%s%s LIMIT %d",
+				strings.Join(exprs, ", "),
+				qident(p.T.Database), qident(p.T.Name), where, r.Cfg.SampleRows)
+			rc, err := r.SrcEx.QueryStream(ctx, sel)
+			if err != nil {
+				return err
+			}
+			insErr := r.DstEx.InsertStream(ctx, qident(sbDB)+"."+qident(p.TblTok), nil, rc)
+			if cerr := rc.Close(); insErr == nil {
+				insErr = cerr // surface a source-side failure too
+			}
+			// A zero-row source stream makes the dest client error with
+			// NO_DATA_TO_INSERT (Code 108). That is "0 rows", not a failure —
+			// returning nil here lets the count()==0 fallback below decide
+			// (unwindowed retry, or a legitimately empty source table).
+			if insErr != nil && strings.Contains(insErr.Error(), "NO_DATA_TO_INSERT") {
+				return nil
+			}
+			return insErr
 		}
 		count := func() (uint64, error) {
-			cnt, err := r.Ex.Query(ctx, fmt.Sprintf("SELECT count() FROM %s.%s", qident(p.DBTok), qident(p.TblTok)))
+			cnt, err := r.DstEx.Query(ctx, fmt.Sprintf("SELECT count() FROM %s.%s", qident(sbDB), qident(p.TblTok)))
 			if err != nil {
 				return 0, err
 			}
@@ -227,7 +257,7 @@ func (r *Run) sandbox(ctx context.Context, plans []*tablePlan) error {
 		if tc := timeFilterCol(p); tc != "" {
 			where = fmt.Sprintf(" WHERE %s >= now() - INTERVAL %d DAY", qident(tc), r.Cfg.WindowDays)
 		}
-		if err := insert(where); err != nil {
+		if err := populate(where); err != nil {
 			// Per-table failure (exotic type, permissions) must not kill the
 			// run: record and continue; the table simply isn't sandboxed.
 			r.Notes = append(r.Notes, fmt.Sprintf("sandbox populate failed for %s: %s", fullTok, firstLine(err.Error())))
@@ -240,7 +270,7 @@ func (r *Run) sandbox(ctx context.Context, plans []*tablePlan) error {
 		if n == 0 && where != "" && p.T.TotalRows > 0 {
 			// static/old dataset: the recency window emptied the sample.
 			// Fall back to unwindowed first-N.
-			if err := insert(""); err != nil {
+			if err := populate(""); err != nil {
 				r.Notes = append(r.Notes, fmt.Sprintf("sandbox unwindowed fallback failed for %s: %s", fullTok, firstLine(err.Error())))
 				continue
 			}

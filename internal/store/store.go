@@ -1,9 +1,12 @@
 // Package store owns the `altinity` meta database: schema, writers, and the
-// run protocol. Everything the pipeline produces lands here — profile tables
-// hold TOKENS ONLY (safe for the LLM-facing read path); identifier_map and
-// masking_plan hold real names (trusted side; never exposed via any
-// LLM-facing surface). The manifest row is written LAST: its presence marks a
-// complete run, and readers only consume the latest complete run.
+// run protocol. The tables split into two groups with different trust levels:
+// TrustedTables (identifier_map, masking_plan) hold real names and live ONLY
+// on the source cluster's meta DB; ProfileTables hold tokens by construction
+// and live on the dest (sandbox) cluster's meta DB, where the LLM-facing read
+// path lives. A grants misconfiguration on the LLM-exposed cluster can
+// therefore de-anonymize nothing. The manifest row is written LAST: its
+// presence marks a complete run, and readers only consume the latest complete
+// run.
 package store
 
 import (
@@ -24,29 +27,30 @@ func New(ex chclient.Executor, metaDB string) *Store {
 	return &Store{Ex: ex, MetaDB: metaDB}
 }
 
-// ddl: one CREATE TABLE IF NOT EXISTS per meta table. ReplacingMergeTree keyed
-// so concurrent/idempotent re-runs dedup instead of conflicting.
-var ddl = []string{
-	`CREATE TABLE IF NOT EXISTS %[1]s.manifest (
+// ddl: one CREATE TABLE IF NOT EXISTS per meta table, keyed by table name.
+// ReplacingMergeTree keyed so concurrent/idempotent re-runs dedup instead of
+// conflicting.
+var ddl = map[string]string{
+	"manifest": `CREATE TABLE IF NOT EXISTS %[1]s.manifest (
 		run_id String, started DateTime, finished DateTime,
 		status String, connection String,
 		scope_databases Array(String), window_days UInt32, sample_rows UInt64,
 		stats String, notes Array(String)
 	) ENGINE = ReplacingMergeTree ORDER BY run_id`,
-	`CREATE TABLE IF NOT EXISTS %[1]s.identifier_map (
+	"identifier_map": `CREATE TABLE IF NOT EXISTS %[1]s.identifier_map (
 		run_id String, kind String, original String, token String
 	) ENGINE = ReplacingMergeTree ORDER BY (run_id, kind, original)`,
-	`CREATE TABLE IF NOT EXISTS %[1]s.masking_plan (
+	"masking_plan": `CREATE TABLE IF NOT EXISTS %[1]s.masking_plan (
 		run_id String, database String, table String, column String,
 		class String, transform String, included UInt8
 	) ENGINE = ReplacingMergeTree ORDER BY (run_id, database, table, column)`,
-	`CREATE TABLE IF NOT EXISTS %[1]s.generated_objects (
+	"generated_objects": `CREATE TABLE IF NOT EXISTS %[1]s.generated_objects (
 		run_id String, object_kind String, name String, created_at DateTime
 	) ENGINE = ReplacingMergeTree ORDER BY (object_kind, name)`,
-	`CREATE TABLE IF NOT EXISTS %[1]s.profile_shape (
+	"profile_shape": `CREATE TABLE IF NOT EXISTS %[1]s.profile_shape (
 		run_id String, key String, value String
 	) ENGINE = ReplacingMergeTree ORDER BY (run_id, key)`,
-	`CREATE TABLE IF NOT EXISTS %[1]s.profile_catalog (
+	"profile_catalog": `CREATE TABLE IF NOT EXISTS %[1]s.profile_catalog (
 		run_id String, db_token String, table_token String,
 		engine String, engine_family String,
 		sorting_key_tok String, partition_key_tok String,
@@ -55,44 +59,53 @@ var ddl = []string{
 		demoted UInt8, demote_reasons Array(String), review_flags Array(String),
 		sandboxed UInt8, sandbox_rows UInt64
 	) ENGINE = ReplacingMergeTree ORDER BY (run_id, db_token, table_token)`,
-	`CREATE TABLE IF NOT EXISTS %[1]s.profile_columns (
+	"profile_columns": `CREATE TABLE IF NOT EXISTS %[1]s.profile_columns (
 		run_id String, db_token String, table_token String, col_token String,
 		position UInt32, type_tok String, class String,
 		in_pk UInt8, in_sk UInt8, in_part UInt8, included UInt8
 	) ENGINE = ReplacingMergeTree ORDER BY (run_id, db_token, table_token, col_token)`,
-	`CREATE TABLE IF NOT EXISTS %[1]s.profile_relations (
+	"profile_relations": `CREATE TABLE IF NOT EXISTS %[1]s.profile_relations (
 		run_id String, rel_kind String,
 		src_db_tok String, src_tbl_tok String,
 		dst_db_tok String, dst_tbl_tok String, detail String
 	) ENGINE = ReplacingMergeTree ORDER BY (run_id, rel_kind, src_db_tok, src_tbl_tok, dst_db_tok, dst_tbl_tok)`,
-	`CREATE TABLE IF NOT EXISTS %[1]s.profile_workload (
+	"profile_workload": `CREATE TABLE IF NOT EXISTS %[1]s.profile_workload (
 		run_id String, db_token String, table_token String,
 		execs UInt64, total_ms UInt64, sels UInt64, ins UInt64,
 		users_tok Array(String)
 	) ENGINE = ReplacingMergeTree ORDER BY (run_id, db_token, table_token)`,
-	`CREATE TABLE IF NOT EXISTS %[1]s.profile_hot_columns (
+	"profile_hot_columns": `CREATE TABLE IF NOT EXISTS %[1]s.profile_hot_columns (
 		run_id String, db_token String, table_token String, col_token String, touches UInt64
 	) ENGINE = ReplacingMergeTree ORDER BY (run_id, db_token, table_token, col_token)`,
-	`CREATE TABLE IF NOT EXISTS %[1]s.profile_queries (
+	"profile_queries": `CREATE TABLE IF NOT EXISTS %[1]s.profile_queries (
 		run_id String, db_token String, table_token String,
 		query_hash String, query_tok String, execs UInt64
 	) ENGINE = ReplacingMergeTree ORDER BY (run_id, db_token, table_token, query_hash)`,
-	`CREATE TABLE IF NOT EXISTS %[1]s.profile_conventions (
+	"profile_conventions": `CREATE TABLE IF NOT EXISTS %[1]s.profile_conventions (
 		run_id String, db_token String, table_token String,
 		metric String, numerator UInt64, denominator UInt64, convention String
 	) ENGINE = ReplacingMergeTree ORDER BY (run_id, db_token, table_token, metric)`,
-	`CREATE TABLE IF NOT EXISTS %[1]s.profile_verification (
+	"profile_verification": `CREATE TABLE IF NOT EXISTS %[1]s.profile_verification (
 		run_id String, claim_type String, subject String, status String, detail String
 	) ENGINE = ReplacingMergeTree ORDER BY (run_id, claim_type, subject)`,
 }
 
-// MetaTables lists the tables Init creates (used by tests and cleanup).
-var MetaTables = []string{
-	"manifest", "identifier_map", "masking_plan", "generated_objects",
+// TrustedTables hold REAL names — they de-anonymize everything and therefore
+// live ONLY on the SOURCE cluster's meta DB, never on the cluster the LLM can
+// reach.
+var TrustedTables = []string{"identifier_map", "masking_plan"}
+
+// ProfileTables hold tokens (plus the registry and the manifest) — these live
+// on the DEST (sandbox) cluster's meta DB, where the LLM-facing read path is.
+var ProfileTables = []string{
+	"manifest", "generated_objects",
 	"profile_shape", "profile_catalog", "profile_columns", "profile_relations",
 	"profile_workload", "profile_hot_columns", "profile_queries",
 	"profile_conventions", "profile_verification",
 }
+
+// MetaTables is the union of both groups (used by tests and cleanup).
+var MetaTables = append(append([]string{}, TrustedTables...), ProfileTables...)
 
 // ProfileContentColumns lists, per LLM-readable profile table, the columns
 // that can carry tokenized content. The omitted columns hold only enumerated
@@ -112,11 +125,24 @@ var ProfileContentColumns = map[string][]string{
 	"profile_verification": {"subject", "detail"},
 }
 
-func (s *Store) Init(ctx context.Context) error {
+// InitTrusted creates the meta DB and the trusted (real-name) tables — call
+// against the SOURCE cluster only.
+func (s *Store) InitTrusted(ctx context.Context) error { return s.init(ctx, TrustedTables) }
+
+// InitProfile creates the meta DB and the tokens-only tables — call against
+// the DEST (sandbox) cluster. In single-cluster mode both groups land in the
+// same meta DB.
+func (s *Store) InitProfile(ctx context.Context) error { return s.init(ctx, ProfileTables) }
+
+func (s *Store) init(ctx context.Context, tables []string) error {
 	if err := s.Ex.Exec(ctx, "CREATE DATABASE IF NOT EXISTS "+quoteIdent(s.MetaDB)); err != nil {
 		return fmt.Errorf("store: create meta db: %w", err)
 	}
-	for _, q := range ddl {
+	for _, t := range tables {
+		q, ok := ddl[t]
+		if !ok {
+			return fmt.Errorf("store: no DDL for meta table %q", t)
+		}
 		if err := s.Ex.Exec(ctx, fmt.Sprintf(q, quoteIdent(s.MetaDB))); err != nil {
 			return fmt.Errorf("store: meta ddl: %w", err)
 		}

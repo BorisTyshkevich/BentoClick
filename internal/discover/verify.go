@@ -1,8 +1,9 @@
-// Verification (phase 7.5, v1 subset): existence re-checks for every
-// identifier the profile references, and leak checks on the emitted sandbox
-// DDL. Behavior probes (EXPLAIN, query_log round-trips) and inferred-join
-// cardinality probes are deferred — v1 relations are structural, and the
-// deferral is recorded in the manifest notes.
+// Verification (phase 7.5, v1 subset): existence re-checks on the SOURCE for
+// every identifier the profile references, leak checks on the sandbox DDL on
+// the DEST, and the cross-cluster trusted-split invariant (no trusted table
+// on the dest meta DB). Behavior probes (EXPLAIN, query_log round-trips) and
+// inferred-join cardinality probes are deferred — v1 relations are
+// structural, and the deferral is recorded in the manifest notes.
 package discover
 
 import (
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/Altinity/anon-discovery/internal/chclient"
+	"github.com/Altinity/anon-discovery/internal/store"
 )
 
 func (r *Run) verify(ctx context.Context) error {
@@ -22,9 +24,9 @@ func (r *Run) verify(ctx context.Context) error {
 		})
 	}
 
-	// 7.5a existence: every table the profile references still exists.
+	// 7.5a existence: every table the profile references still exists (SOURCE).
 	missing := 0
-	res, err := r.Ex.Query(ctx, fmt.Sprintf(
+	res, err := r.SrcEx.Query(ctx, fmt.Sprintf(
 		"SELECT concat(database, '.', name) FROM system.tables WHERE database IN (%s)", inList(r.ScopeDBs)))
 	if err != nil {
 		return err
@@ -44,20 +46,27 @@ func (r *Run) verify(ctx context.Context) error {
 	}
 	add("existence", "scope", "verified", fmt.Sprintf("%d tables checked, %d vanished", len(r.Tables), missing))
 
-	// Sandbox leak check: SHOW CREATE of every sandbox table must contain no
-	// real identifier and no seed digits. This is the structural property the
-	// sandbox was chosen for — assert it, don't assume it.
+	// Sandbox leak check (DEST): SHOW CREATE of every sandbox table must
+	// contain no real identifier and no seed digits. This is the structural
+	// property the sandbox was chosen for — assert it, don't assume it. When
+	// the DB name is disclosed (DestDB == SourceDB) it is intentionally
+	// present in the DDL and exempt; table/column names never are.
+	disclosed := r.Cfg.DestDB == r.Cfg.SourceDB
 	leaks := 0
 	for full := range r.SandboxRows {
 		t := r.byFull[full]
 		dbTok, _ := r.IdMap.Lookup("db", t.Database)
 		tblTok, _ := r.IdMap.Lookup("tbl", t.Name)
-		sc, err := r.Ex.Query(ctx, fmt.Sprintf("SHOW CREATE TABLE %s.%s", qident(dbTok), qident(tblTok)))
+		sc, err := r.DstEx.Query(ctx, fmt.Sprintf("SHOW CREATE TABLE %s.%s", qident(r.Cfg.DestDB), qident(tblTok)))
 		if err != nil {
 			return err
 		}
 		ddl := cell(sc, 0, 0)
-		if leak := findLeak(ddl, t, r.Minter.ValueSeed()); leak != "" {
+		names := append([]string{t.Name}, colNames(t)...)
+		if !disclosed {
+			names = append(names, t.Database)
+		}
+		if leak := findLeak(ddl, names, r.Minter.ValueSeed()); leak != "" {
 			leaks++
 			add("sandbox-leak", dbTok+"."+tblTok, "LEAK", leak)
 		}
@@ -68,20 +77,40 @@ func (r *Run) verify(ctx context.Context) error {
 	}
 	add("sandbox-leak", "all", "verified", fmt.Sprintf("%d sandbox tables checked", len(r.SandboxRows)))
 
+	// Trusted-split invariant: the dest meta DB must hold NO trusted table —
+	// identifier_map / masking_plan de-anonymize everything. Single-cluster
+	// mode (identical source and dest commands) shares one meta DB where the
+	// trusted tables legitimately live, so the check only applies cross-
+	// cluster.
+	if r.Cfg.Source != r.Cfg.Dest {
+		res, err := r.DstEx.Query(ctx, fmt.Sprintf(
+			"SELECT name FROM system.tables WHERE database = '%s' AND name IN (%s)",
+			store.SQLEsc(r.Cfg.MetaDB), inList(store.TrustedTables)))
+		if err != nil {
+			return err
+		}
+		if len(res.Data) > 0 {
+			return fmt.Errorf("verify: trusted table %q exists on the dest meta DB %s; run aborted before manifest",
+				str(res.Data[0][0]), r.Cfg.MetaDB)
+		}
+		add("trusted-split", "dest-meta", "verified",
+			fmt.Sprintf("none of [%s] on dest %s", strings.Join(store.TrustedTables, ", "), r.Cfg.MetaDB))
+	}
+
 	r.Notes = append(r.Notes,
 		"behavior probes (EXPLAIN/query_log) and join-cardinality probes deferred: v1 relations are structural only")
-	return r.St.Insert(ctx, "profile_verification",
+	return r.DstStore.Insert(ctx, "profile_verification",
 		[]string{"run_id", "claim_type", "subject", "status", "detail"}, rows)
 }
 
-// findLeak scans emitted DDL for the table's real identifiers or the seed.
-// Word-boundary matching: a column named "time" must not false-positive on
-// the DateTime type keyword.
-func findLeak(ddl string, t *Table, seed uint64) string {
+// findLeak scans emitted DDL for any of the given real identifiers or the
+// seed. Word-boundary matching: a column named "time" must not
+// false-positive on the DateTime type keyword.
+func findLeak(ddl string, names []string, seed uint64) string {
 	if WordPresent(ddl, fmt.Sprintf("%d", seed)) {
 		return "value seed present"
 	}
-	for _, name := range append([]string{t.Database, t.Name}, colNames(t)...) {
+	for _, name := range names {
 		if len(name) < 4 {
 			continue // very short names false-positive too easily; tokens never contain them whole
 		}

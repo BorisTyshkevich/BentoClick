@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/Altinity/anon-discovery/internal/chclient"
 )
 
 type HotTable struct {
@@ -47,15 +49,22 @@ const qlogSystemFilter = `splitByChar('.', t)[1] NOT IN
 // tokenDBPattern matches our own sandbox databases (mirror of token.ReservedRe).
 const tokenDBPattern = `^(db|tbl|col|user|role|dict|cluster|disk|host|sql|field|enum)_[0-9a-f]{8,16}$`
 
-// ownQueryFilter excludes the tool's own footprint from workload mining: any
-// query touching a token-pattern database or the meta DB is ours (sandbox
-// materialization INSERT...SELECTs carry the value seed and token names) or
-// is sandbox exploration — neither is business workload. Without this, a
-// previous run's INSERTs become "representative queries" and the reserved-
-// namespace guard aborts the next run (observed live on the demo server).
+// ownQueryFilter excludes the tool's own footprint from workload mining, two
+// ways. (1) log_comment: every anond query self-tags with --log_comment, and
+// in cross-cluster mode the masking SELECTs run on the SOURCE referencing
+// only real tables — the token-DB filter cannot catch them, yet they carry
+// the value seed and `AS col_<tok>` aliases; observed unfiltered, the next
+// run's observe wave would see those aliases and the reserved-namespace guard
+// would abort. (2) token-DB/meta-DB arrayExists: defense in depth and the
+// single-cluster case, where a previous run's sandbox INSERTs and sandbox
+// exploration touch token-pattern databases (observed live on the demo
+// server) — and where queries from other tools (or pre-log_comment anond
+// builds) may lack the tag.
 func (r *Run) ownQueryFilter() string {
 	return fmt.Sprintf(`NOT arrayExists(x -> match(splitByChar('.', x)[1], '%s')
-	  OR splitByChar('.', x)[1] = '%s', tables)`, tokenDBPattern, strings.ReplaceAll(r.Cfg.MetaDB, "'", "\\'"))
+	  OR splitByChar('.', x)[1] = '%s', tables)
+	  AND log_comment != '%s'`,
+		tokenDBPattern, strings.ReplaceAll(r.Cfg.MetaDB, "'", "\\'"), chclient.LogComment)
 }
 
 // mining runs all of phase 5. No-ops gracefully when the query log is empty
@@ -79,7 +88,7 @@ func (r *Run) mining(ctx context.Context) error {
 
 // hotTables: 5a top-50 by execs with workload shape + users.
 func (r *Run) hotTables(ctx context.Context) error {
-	rows, err := r.Ex.Query(ctx, fmt.Sprintf(`
+	rows, err := r.SrcEx.Query(ctx, fmt.Sprintf(`
 		SELECT t AS full_name,
 		       count() AS execs,
 		       sum(query_duration_ms) AS total_ms,
@@ -119,7 +128,7 @@ func (r *Run) hotColumns(ctx context.Context) error {
 	for _, h := range r.Hot {
 		hotNames = append(hotNames, "'"+strings.ReplaceAll(h.Full, "'", "\\'")+"'")
 	}
-	rows, err := r.Ex.Query(ctx, fmt.Sprintf(`
+	rows, err := r.SrcEx.Query(ctx, fmt.Sprintf(`
 		SELECT t, col, count() AS touches
 		FROM (
 		  SELECT arrayJoin(tables) AS t, arrayJoin(columns) AS col
@@ -152,7 +161,7 @@ func (r *Run) repQueries(ctx context.Context) error {
 		top = top[:15]
 	}
 	for _, h := range top {
-		rows, err := r.Ex.Query(ctx, fmt.Sprintf(`
+		rows, err := r.SrcEx.Query(ctx, fmt.Sprintf(`
 			SELECT toString(normalized_query_hash) AS h,
 			       any(normalizeQuery(replaceRegexpAll(query, '/\\*.*?\\*/', ''))) AS clean,
 			       count() AS execs
@@ -182,7 +191,7 @@ func (r *Run) formRatios(ctx context.Context) error {
 		return nil
 	}
 	top := r.Hot[0].Full
-	rows, err := r.Ex.Query(ctx, fmt.Sprintf(`
+	rows, err := r.SrcEx.Query(ctx, fmt.Sprintf(`
 		WITH q AS (
 		  SELECT lower(replaceRegexpAll(query, '/\\*.*?\\*/', '')) AS body, count() AS execs
 		  FROM system.query_log

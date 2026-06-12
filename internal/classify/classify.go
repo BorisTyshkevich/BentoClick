@@ -24,6 +24,7 @@ const (
 	ClassJoinKey    Class = "joinkey"    // ids/UUIDs/IPs/key columns — deterministic keyed hash (joins survive)
 	ClassLabel      Class = "label"      // LowCardinality(String) — short keyed-hash token per distinct value
 	ClassFreeText   Class = "freetext"   // other String/FixedString — constant redaction
+	ClassAttrMap    Class = "attrmap"    // Map(String|LowCardinality(String), String) — keys kept, values masked per-value
 	ClassSchemaless Class = "schemaless" // JSON/Dynamic/complex-with-strings — EXCLUDED (fail closed)
 )
 
@@ -71,6 +72,26 @@ func isTemporal(base string) bool {
 		strings.HasPrefix(base, "DateTime") || strings.HasPrefix(base, "Time")
 }
 
+// attrMapKey returns the key type when t is exactly Map(K, V) with
+// K ∈ {String, LowCardinality(String)} and V == String — the OTel attribute
+// shape (ResourceAttributes, LogAttributes). Neither accepted K contains a
+// nested comma, so prefix matching on the canonical system.columns spelling
+// ("Map(K, V)") is exact. Nullable/LowCardinality values are NOT accepted in
+// v1: anything else stays string-bearing and fails closed.
+func attrMapKey(t string) (string, bool) {
+	inner, ok := strings.CutPrefix(t, "Map(")
+	if !ok || !strings.HasSuffix(inner, ")") {
+		return "", false
+	}
+	inner = inner[:len(inner)-1]
+	for _, k := range []string{"String", "LowCardinality(String)"} {
+		if v, ok := strings.CutPrefix(inner, k+", "); ok && v == "String" {
+			return k, true
+		}
+	}
+	return "", false
+}
+
 // stringBearing reports whether a COMPLEX type can carry free text anywhere
 // inside (Array(String), Map(String,..), Tuple(.. String ..), FixedString...).
 // Mirrors the collector's _NON_VALUE_TYPES fail-closed test.
@@ -109,6 +130,11 @@ func Classify(c Column) Class {
 		}
 		return ClassMeasure
 	default:
+		// OTel-shaped attribute maps before the generic fail-closed check:
+		// the keys carry the analytical signal, values get masked per-value.
+		if _, ok := attrMapKey(c.Type); ok {
+			return ClassAttrMap
+		}
 		// complex / aggregate / geo / anything unrecognized: keep only when
 		// provably string-free, else fail closed.
 		if stringBearing(c.Type) {
@@ -169,6 +195,18 @@ func MaskExpr(c Column, class Class, seed uint64) (expr, outType string, include
 		return nullWrap(nullable, q, fmt.Sprintf("substring(lower(hex(%s)), 1, 8)", hash("toString("+nn+")"))), t, true
 	case ClassFreeText:
 		return "'[redacted]'", maybeNullable("String"), true
+	case ClassAttrMap:
+		// Keys pass through verbatim: the vocabulary is OTel semconv, but
+		// custom key names also pass through unmasked — that residual is
+		// accepted and documented at the call site. Values keep numerics,
+		// booleans and empties (analytically load-bearing, low identifying
+		// power); everything else becomes a 12-hex keyed-hash token.
+		keyType, _ := attrMapKey(c.Type)
+		masked := fmt.Sprintf(
+			"if(match(v, '^-?[0-9.]+$') OR v IN ('true', 'false') OR v = '', v, substring(lower(hex(%s)), 1, 12))",
+			hash("v"))
+		return fmt.Sprintf("mapFromArrays(mapKeys(%s), arrayMap(v -> %s, mapValues(%s)))", q, masked, q),
+			fmt.Sprintf("Map(%s, String)", keyType), true
 	default: // ClassSchemaless
 		return "", "", false
 	}

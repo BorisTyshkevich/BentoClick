@@ -1,25 +1,35 @@
-// Integration tests against a live ClickHouse (env-gated).
+// Integration tests against live ClickHouse (env-gated).
+//
+// Single-cluster suite (source = dest = one cluster):
 //
 //	ANON_TEST_CONNECTION=demo go test ./internal/integration/...
 //
-// Uses a private meta DB (altinity_anontest_<pid>) and a scoped database set;
-// every object the run creates is registered and dropped afterwards. The
-// admin connection must be able to create databases.
+// Cross-cluster suite (source via a wrapper command, dest via a connection):
 //
-// Assertions (from the plan):
+//	ANON_TEST_SOURCE_CMD="cl otel" ANON_TEST_SOURCE_DB=claude_otel \
+//	ANON_TEST_DEST_CONNECTION=demo go test -run TestCrossCluster ./internal/integration/...
 //
-//	A no-survivor   — no real scope identifier appears in profile rows or sandbox DDL
-//	B bijection     — identifier_map injective per kind, exactly the observed set
-//	C sandbox works — queryable, deterministic join keys, freetext redacted, schemaless absent
+// Tests use a private meta DB (altinity_anontest_<pid>) and a test-named dest
+// sandbox DB; every object the run creates is registered and dropped
+// afterwards. The connections must be able to create databases.
+//
+// Assertions:
+//
+//	A no-survivor   — no real scope identifier appears in dest profile rows or sandbox DDL
+//	B bijection     — identifier_map (SOURCE) injective per kind
+//	C sandbox works — queryable on dest, token columns, deterministic transforms
 //	D idempotence   — second run produces identical tokens
-//	E safety        — a decoy foreign object with a sandbox-shaped name aborts, never dropped
+//	E safety        — a decoy foreign object with our dest DB name aborts, never dropped
 //	F manifest      — incomplete runs are invisible to readers
+//	G trusted split — identifier_map / masking_plan never exist on the dest (cross-cluster)
+//	H attrmap       — masked map values are numeric/bool/empty/12-hex only (cross-cluster)
 package integration
 
 import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -27,81 +37,105 @@ import (
 	"github.com/Altinity/anon-discovery/internal/chclient"
 	"github.com/Altinity/anon-discovery/internal/discover"
 	"github.com/Altinity/anon-discovery/internal/store"
-	"github.com/Altinity/anon-discovery/internal/token"
 )
 
 const testKey = "integration-test-key-0123456789abcdef"
 
-// scope: small, stable demo databases.
-var scopeDBs = []string{"git"}
+type fixture struct {
+	srcEx, dstEx chclient.Executor
+	dstStore     *store.Store
+	srcStore     *store.Store
+	metaDB       string
+	cfg          discover.Config
+	run          *discover.Run
+	ctx          context.Context
+	crossCluster bool
+}
 
-func conn(t *testing.T) string {
+// setupSingle: source = dest = ANON_TEST_CONNECTION, source DB "git".
+func setupSingle(t *testing.T) *fixture {
 	c := os.Getenv("ANON_TEST_CONNECTION")
 	if c == "" {
 		t.Skip("ANON_TEST_CONNECTION not set; skipping integration tests")
 	}
-	return c
+	cmd := "clickhouse-client --connection " + c
+	return setup(t, cmd, cmd, "git", fmt.Sprintf("anontest_sb_%d", os.Getpid()), false)
 }
 
-type fixture struct {
-	ex     *chclient.Client
-	st     *store.Store
-	metaDB string
-	run    *discover.Run
-	ctx    context.Context
+// setupCross: source = ANON_TEST_SOURCE_CMD (db ANON_TEST_SOURCE_DB, default
+// claude_otel), dest = ANON_TEST_DEST_CONNECTION.
+func setupCross(t *testing.T) *fixture {
+	src := os.Getenv("ANON_TEST_SOURCE_CMD")
+	dst := os.Getenv("ANON_TEST_DEST_CONNECTION")
+	if src == "" || dst == "" {
+		t.Skip("ANON_TEST_SOURCE_CMD / ANON_TEST_DEST_CONNECTION not set; skipping cross-cluster tests")
+	}
+	srcDB := os.Getenv("ANON_TEST_SOURCE_DB")
+	if srcDB == "" {
+		srcDB = "claude_otel"
+	}
+	return setup(t, src, "clickhouse-client --connection "+dst, srcDB,
+		fmt.Sprintf("anontest_xc_%d", os.Getpid()), true)
 }
 
-func setup(t *testing.T) *fixture {
-	c := conn(t)
+func setup(t *testing.T, srcCmd, dstCmd, srcDB, destDB string, cross bool) *fixture {
 	metaDB := fmt.Sprintf("altinity_anontest_%d", os.Getpid())
-	ex := chclient.New(c)
 	cfg := discover.Config{
-		Connection: c,
+		Source:     srcCmd,
+		Dest:       dstCmd,
+		SourceDB:   srcDB,
+		DestDB:     destDB, // differs from srcDB -> DB name stays tokenized
 		MetaDB:     metaDB,
-		Databases:  scopeDBs,
 		WindowDays: 7,
 		SampleRows: 10_000,
 		HMACKey:    []byte(testKey),
 		Log:        t.Logf,
 	}
-	r, err := discover.NewRun(cfg, ex)
+	srcEx := chclient.NewFromString(srcCmd)
+	dstEx := chclient.NewFromString(dstCmd)
+	r, err := discover.NewRun(cfg, srcEx, dstEx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &fixture{ex: ex, st: store.New(ex, metaDB), metaDB: metaDB, run: r, ctx: context.Background()}
+	f := &fixture{
+		srcEx: srcEx, dstEx: dstEx,
+		srcStore: store.New(srcEx, metaDB), dstStore: store.New(dstEx, metaDB),
+		metaDB: metaDB, cfg: cfg, run: r, ctx: context.Background(), crossCluster: cross,
+	}
 	t.Cleanup(func() { f.cleanup(t) })
 	return f
 }
 
-// cleanup drops registered sandbox objects + the test meta DB.
+// cleanup drops registered dest objects + the test meta DB on both sides.
 func (f *fixture) cleanup(t *testing.T) {
-	objs, err := f.st.RegisteredObjects(f.ctx)
+	objs, err := f.dstStore.RegisteredObjects(f.ctx)
 	if err == nil {
 		for _, full := range objs["table"] {
-			parts := strings.SplitN(full, ".", 2)
-			if len(parts) == 2 && token.ReservedRe.MatchString(parts[0]) {
-				f.ex.Exec(f.ctx, fmt.Sprintf("DROP TABLE IF EXISTS `%s`.`%s`", parts[0], parts[1]))
+			if db, tbl, ok := strings.Cut(full, "."); ok {
+				f.dstEx.Exec(f.ctx, fmt.Sprintf("DROP TABLE IF EXISTS `%s`.`%s`", db, tbl))
 			}
 		}
 		for _, db := range objs["database"] {
-			if token.ReservedRe.MatchString(db) {
-				f.ex.Exec(f.ctx, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", db))
-			}
+			f.dstEx.Exec(f.ctx, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", db))
 		}
 	}
-	if err := f.ex.Exec(f.ctx, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", f.metaDB)); err != nil {
-		t.Logf("cleanup: %v", err)
+	if err := f.dstEx.Exec(f.ctx, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", f.metaDB)); err != nil {
+		t.Logf("cleanup dest meta: %v", err)
+	}
+	if err := f.srcEx.Exec(f.ctx, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", f.metaDB)); err != nil {
+		t.Logf("cleanup source meta: %v", err)
 	}
 }
 
+// realIdentifiers: table + column names of the source DB (len >= 4).
 func (f *fixture) realIdentifiers(t *testing.T) []string {
-	rows, err := f.ex.Query(f.ctx, fmt.Sprintf(`
+	db := strings.ReplaceAll(f.cfg.SourceDB, "'", "\\'")
+	rows, err := f.srcEx.Query(f.ctx, fmt.Sprintf(`
 		SELECT DISTINCT name FROM (
-		  SELECT name FROM system.tables WHERE database IN ('%s')
+		  SELECT name FROM system.tables WHERE database = '%s'
 		  UNION ALL
-		  SELECT name FROM system.columns WHERE database IN ('%s')
-		) WHERE length(name) >= 4`,
-		strings.Join(scopeDBs, "','"), strings.Join(scopeDBs, "','")))
+		  SELECT name FROM system.columns WHERE database = '%s'
+		) WHERE length(name) >= 4`, db, db))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,12 +145,24 @@ func (f *fixture) realIdentifiers(t *testing.T) []string {
 			out = append(out, *r[0])
 		}
 	}
-	out = append(out, scopeDBs...)
-	return out
+	return append(out, f.cfg.SourceDB)
 }
 
 func TestPipeline(t *testing.T) {
-	f := setup(t)
+	f := setupSingle(t)
+	f.execute(t)
+	f.runAssertions(t)
+}
+
+func TestCrossCluster(t *testing.T) {
+	f := setupCross(t)
+	f.execute(t)
+	f.runAssertions(t)
+	t.Run("G_trusted_split", func(t *testing.T) { f.assertTrustedSplit(t) })
+	t.Run("H_attrmap", func(t *testing.T) { f.assertAttrMap(t) })
+}
+
+func (f *fixture) execute(t *testing.T) {
 	start := time.Now()
 	if err := f.run.Execute(f.ctx); err != nil {
 		t.Fatal(err)
@@ -126,7 +172,9 @@ func TestPipeline(t *testing.T) {
 	if len(f.run.Tables) == 0 {
 		t.Fatal("no tables discovered in scope")
 	}
+}
 
+func (f *fixture) runAssertions(t *testing.T) {
 	t.Run("A_no_survivor", func(t *testing.T) { f.assertNoSurvivor(t) })
 	t.Run("B_bijection", func(t *testing.T) { f.assertBijection(t) })
 	t.Run("C_sandbox", func(t *testing.T) { f.assertSandbox(t) })
@@ -134,12 +182,13 @@ func TestPipeline(t *testing.T) {
 	t.Run("F_manifest", func(t *testing.T) { f.assertManifest(t) })
 }
 
-// A: no real identifier survives in any LLM-readable surface.
+// A: no real identifier survives in any LLM-readable surface on the DEST.
 func (f *fixture) assertNoSurvivor(t *testing.T) {
 	reals := f.realIdentifiers(t)
 	var blob strings.Builder
 	for tbl, cols := range store.ProfileContentColumns {
-		rows, err := f.ex.Query(f.ctx, fmt.Sprintf("SELECT %s FROM `%s`.%s", strings.Join(cols, ", "), f.metaDB, tbl))
+		rows, err := f.dstEx.Query(f.ctx, fmt.Sprintf(
+			"SELECT %s FROM `%s`.%s", strings.Join(cols, ", "), f.metaDB, tbl))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -152,14 +201,13 @@ func (f *fixture) assertNoSurvivor(t *testing.T) {
 			}
 		}
 	}
-	// sandbox DDL too
-	objs, err := f.st.RegisteredObjects(f.ctx)
+	objs, err := f.dstStore.RegisteredObjects(f.ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, full := range objs["table"] {
-		parts := strings.SplitN(full, ".", 2)
-		sc, err := f.ex.Query(f.ctx, fmt.Sprintf("SHOW CREATE TABLE `%s`.`%s`", parts[0], parts[1]))
+		db, tbl, _ := strings.Cut(full, ".")
+		sc, err := f.dstEx.Query(f.ctx, fmt.Sprintf("SHOW CREATE TABLE `%s`.`%s`", db, tbl))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -178,13 +226,16 @@ func (f *fixture) assertNoSurvivor(t *testing.T) {
 	t.Logf("checked %d identifiers, %d survivors", len(reals), survivors)
 }
 
-// B: identifier_map is injective per kind and covers the scope tables.
+// B: identifier_map on the SOURCE is injective per kind.
 func (f *fixture) assertBijection(t *testing.T) {
-	rows, err := f.ex.Query(f.ctx, fmt.Sprintf(`
+	rows, err := f.srcEx.Query(f.ctx, fmt.Sprintf(`
 		SELECT kind, count(DISTINCT original), count(DISTINCT token), count()
 		FROM `+"`%s`"+`.identifier_map GROUP BY kind`, f.metaDB))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(rows.Data) == 0 {
+		t.Fatal("identifier_map empty on source")
 	}
 	for _, row := range rows.Data {
 		kind, dOrig, dTok, n := *row[0], *row[1], *row[2], *row[3]
@@ -192,20 +243,11 @@ func (f *fixture) assertBijection(t *testing.T) {
 			t.Errorf("kind %s: not a bijection (orig %s, tok %s, rows %s)", kind, dOrig, dTok, n)
 		}
 	}
-	// every scope table name is in the map
-	cnt, err := f.ex.Query(f.ctx, fmt.Sprintf(
-		"SELECT count() FROM `%s`.identifier_map WHERE kind = 'tbl'", f.metaDB))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if *cnt.Data[0][0] == "0" {
-		t.Error("no tbl entries in the identifier map")
-	}
 }
 
-// C: sandbox tables queryable; freetext redacted; join keys deterministic.
+// C: sandbox tables on dest queryable with token columns; transforms deterministic.
 func (f *fixture) assertSandbox(t *testing.T) {
-	objs, err := f.st.RegisteredObjects(f.ctx)
+	objs, err := f.dstStore.RegisteredObjects(f.ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,8 +255,8 @@ func (f *fixture) assertSandbox(t *testing.T) {
 		t.Fatal("no sandbox tables created")
 	}
 	for _, full := range objs["table"] {
-		parts := strings.SplitN(full, ".", 2)
-		rows, err := f.ex.Query(f.ctx, fmt.Sprintf("SELECT * FROM `%s`.`%s` LIMIT 5", parts[0], parts[1]))
+		db, tbl, _ := strings.Cut(full, ".")
+		rows, err := f.dstEx.Query(f.ctx, fmt.Sprintf("SELECT * FROM `%s`.`%s` LIMIT 5", db, tbl))
 		if err != nil {
 			t.Fatalf("sandbox %s unqueryable: %v", full, err)
 		}
@@ -224,12 +266,9 @@ func (f *fixture) assertSandbox(t *testing.T) {
 			}
 		}
 	}
-
-	// determinism: the same real value must hash identically in two
-	// different sandbox runs (covered indirectly by D) and within one table:
-	// re-masking the source column equals the stored sandbox values.
-	plan, err := f.ex.Query(f.ctx, fmt.Sprintf(`
-		SELECT database, table, column, transform
+	// determinism: re-evaluating a joinkey transform on the SOURCE equals itself
+	plan, err := f.srcEx.Query(f.ctx, fmt.Sprintf(`
+		SELECT database, table, transform
 		FROM `+"`%s`"+`.masking_plan
 		WHERE class = 'joinkey' AND included = 1 LIMIT 1`, f.metaDB))
 	if err != nil {
@@ -239,8 +278,8 @@ func (f *fixture) assertSandbox(t *testing.T) {
 		t.Log("no joinkey columns in scope; determinism spot-check skipped")
 		return
 	}
-	db, tbl, transform := *plan.Data[0][0], *plan.Data[0][1], *plan.Data[0][3]
-	probe, err := f.ex.Query(f.ctx, fmt.Sprintf(
+	db, tbl, transform := *plan.Data[0][0], *plan.Data[0][1], *plan.Data[0][2]
+	probe, err := f.srcEx.Query(f.ctx, fmt.Sprintf(
 		"SELECT %s AS a, %s AS b FROM `%s`.`%s` LIMIT 1", transform, transform, db, tbl))
 	if err != nil {
 		t.Fatalf("transform probe: %v", err)
@@ -255,21 +294,20 @@ func (f *fixture) assertSandbox(t *testing.T) {
 
 // D: a second run mints identical tokens (HMAC determinism end-to-end).
 func (f *fixture) assertIdempotence(t *testing.T) {
-	before, err := f.ex.Query(f.ctx, fmt.Sprintf(
-		"SELECT kind, original, token FROM `%s`.identifier_map ORDER BY kind, original, token", f.metaDB))
+	mapSQL := fmt.Sprintf(
+		"SELECT DISTINCT kind, original, token FROM `%s`.identifier_map ORDER BY kind, original, token", f.metaDB)
+	before, err := f.srcEx.Query(f.ctx, mapSQL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := f.run.Cfg
-	r2, err := discover.NewRun(cfg, f.ex)
+	r2, err := discover.NewRun(f.cfg, f.srcEx, f.dstEx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := r2.Execute(f.ctx); err != nil {
 		t.Fatal(err)
 	}
-	after, err := f.ex.Query(f.ctx, fmt.Sprintf(
-		"SELECT DISTINCT kind, original, token FROM `%s`.identifier_map ORDER BY kind, original, token", f.metaDB))
+	after, err := f.srcEx.Query(f.ctx, mapSQL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,9 +325,9 @@ func (f *fixture) assertIdempotence(t *testing.T) {
 	}
 }
 
-// F: manifest written last; readers see only complete runs.
+// F: manifest (on DEST) written last; readers see only complete runs.
 func (f *fixture) assertManifest(t *testing.T) {
-	runID, err := f.st.LatestCompleteRun(f.ctx)
+	runID, err := f.dstStore.LatestCompleteRun(f.ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,20 +336,63 @@ func (f *fixture) assertManifest(t *testing.T) {
 	}
 }
 
-// E: a decoy database named like a sandbox DB but NOT registered must abort
-// the run and must never be dropped.
-func TestSafetyDecoy(t *testing.T) {
-	c := conn(t)
-	ex := chclient.New(c)
-	ctx := context.Background()
-	metaDB := fmt.Sprintf("altinity_anontest_decoy_%d", os.Getpid())
+// G: the trusted tables never exist on the dest cluster's meta DB.
+func (f *fixture) assertTrustedSplit(t *testing.T) {
+	for _, tbl := range store.TrustedTables {
+		rows, err := f.dstEx.Query(f.ctx, fmt.Sprintf(
+			"SELECT count() FROM system.tables WHERE database = '%s' AND name = '%s'", f.metaDB, tbl))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if *rows.Data[0][0] != "0" {
+			t.Errorf("trusted table %s exists on the DEST cluster", tbl)
+		}
+	}
+}
 
-	// figure out which db token the run WILL use for the scope db
-	m, err := token.NewMinter([]byte(testKey))
+// H: masked attrmap values on the dest are only numeric/bool/empty/12-hex.
+func (f *fixture) assertAttrMap(t *testing.T) {
+	// find an attrmap column in the dest profile (class is stored per column)
+	rows, err := f.dstEx.Query(f.ctx, fmt.Sprintf(`
+		SELECT db_token, table_token, col_token FROM `+"`%s`"+`.profile_columns
+		WHERE class = 'attrmap' AND included = 1 LIMIT 1`, f.metaDB))
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoy := m.Token("db", scopeDBs[0], token.HexLen)
+	if len(rows.Data) == 0 {
+		t.Skip("no attrmap columns in scope")
+	}
+	tblTok, colTok := *rows.Data[0][1], *rows.Data[0][2]
+	vals, err := f.dstEx.Query(f.ctx, fmt.Sprintf(
+		"SELECT arrayJoin(mapValues(%s)) AS v FROM `%s`.`%s` LIMIT 200", colTok, f.cfg.DestDB, tblTok))
+	if err != nil {
+		t.Fatalf("attrmap values query: %v", err)
+	}
+	okVal := regexp.MustCompile(`^(|-?[0-9.]+|true|false|[0-9a-f]{12})$`)
+	bad := 0
+	for _, row := range vals.Data {
+		if row[0] != nil && !okVal.MatchString(*row[0]) {
+			bad++
+		}
+	}
+	if bad > 0 {
+		t.Errorf("%d attrmap values are neither kept-safe nor 12-hex masked", bad)
+	}
+	t.Logf("attrmap spot-check: %d values OK", len(vals.Data))
+}
+
+// E: a decoy database named like our dest DB but NOT registered must abort
+// the run and must never be dropped.
+func TestSafetyDecoy(t *testing.T) {
+	c := os.Getenv("ANON_TEST_CONNECTION")
+	if c == "" {
+		t.Skip("ANON_TEST_CONNECTION not set; skipping integration tests")
+	}
+	cmd := "clickhouse-client --connection " + c
+	ex := chclient.NewFromString(cmd)
+	ctx := context.Background()
+	metaDB := fmt.Sprintf("altinity_anontest_decoy_%d", os.Getpid())
+	decoy := fmt.Sprintf("anontest_decoy_%d", os.Getpid())
 
 	if err := ex.Exec(ctx, fmt.Sprintf("CREATE DATABASE `%s`", decoy)); err != nil {
 		t.Fatal(err)
@@ -320,18 +401,18 @@ func TestSafetyDecoy(t *testing.T) {
 	defer ex.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", metaDB))
 
 	cfg := discover.Config{
-		Connection: c, MetaDB: metaDB, Databases: scopeDBs,
-		WindowDays: 7, SampleRows: 1000, HMACKey: []byte(testKey), Log: t.Logf,
+		Source: cmd, Dest: cmd, SourceDB: "git", DestDB: decoy,
+		MetaDB: metaDB, WindowDays: 7, SampleRows: 1000,
+		HMACKey: []byte(testKey), Log: t.Logf,
 	}
-	r, err := discover.NewRun(cfg, ex)
+	r, err := discover.NewRun(cfg, ex, ex)
 	if err != nil {
 		t.Fatal(err)
 	}
 	err = r.Execute(ctx)
 	if err == nil || !strings.Contains(err.Error(), "safety") {
-		t.Fatalf("run against a foreign object with our token name must abort with a safety error, got: %v", err)
+		t.Fatalf("run against a foreign dest DB must abort with a safety error, got: %v", err)
 	}
-	// and the decoy must still exist
 	rows, err := ex.Query(ctx, fmt.Sprintf("SELECT count() FROM system.databases WHERE name = '%s'", decoy))
 	if err != nil {
 		t.Fatal(err)

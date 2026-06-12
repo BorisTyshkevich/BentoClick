@@ -14,8 +14,8 @@ import (
 	"github.com/Altinity/anon-discovery/internal/token"
 )
 
-// excludedDBs are never profiled. Our own generated objects (meta DB, token
-// DBs) are excluded dynamically in roster().
+// excludedDBs are never profiled; roster() rejects them (and the meta DB and
+// the reserved token namespace) as a source DB.
 var excludedDBs = []string{
 	"system", "information_schema", "INFORMATION_SCHEMA", "_temporary_and_external_tables",
 }
@@ -70,14 +70,14 @@ func inList(dbs []string) string {
 
 // shape: phase 0 — version + query_log presence.
 func (r *Run) shape(ctx context.Context) error {
-	rows, err := r.Ex.Query(ctx, "SELECT version()")
+	rows, err := r.SrcEx.Query(ctx, "SELECT version()")
 	if err != nil {
 		return fmt.Errorf("phase0: %w", err)
 	}
 	r.Version = cell(rows, 0, 0)
 	r.Shape["version"] = r.Version
 
-	qr, err := r.Ex.Query(ctx, fmt.Sprintf(
+	qr, err := r.SrcEx.Query(ctx, fmt.Sprintf(
 		"SELECT count() FROM system.query_log WHERE type = 'QueryFinish' AND event_date >= today() - %d", r.Cfg.WindowDays))
 	if err != nil {
 		r.Shape["qlog"] = "unavailable"
@@ -88,32 +88,30 @@ func (r *Run) shape(ctx context.Context) error {
 	return nil
 }
 
-// roster: phase 1 — pick scope databases and load table metadata.
+// roster: phase 1 — load table metadata for the single source database.
 func (r *Run) roster(ctx context.Context) error {
-	rows, err := r.Ex.Query(ctx, fmt.Sprintf(`
+	db := r.Cfg.SourceDB
+	for _, ex := range excludedDBs {
+		if db == ex {
+			return fmt.Errorf("phase1: refusing to profile system database %q", db)
+		}
+	}
+	if db == r.Cfg.MetaDB {
+		return fmt.Errorf("phase1: source database %q is the meta DB", db)
+	}
+	if token.ReservedRe.MatchString(db) {
+		return fmt.Errorf("phase1: source database %q is inside the reserved token namespace", db)
+	}
+	rows, err := r.SrcEx.Query(ctx, fmt.Sprintf(`
 		SELECT database, name, engine, engine_full, create_table_query,
 		       partition_key, sorting_key,
 		       coalesce(total_rows, 0), coalesce(total_bytes, 0)
 		FROM system.tables
-		WHERE database NOT IN (%s)`, inList(excludedDBs)))
+		WHERE database = '%s'`, strings.ReplaceAll(db, "'", "\\'")))
 	if err != nil {
 		return fmt.Errorf("phase1 roster: %w", err)
 	}
-	wantDB := map[string]bool{}
-	for _, d := range r.Cfg.Databases {
-		wantDB[d] = true
-	}
 	for _, row := range rows.Data {
-		db := str(row[0])
-		if db == r.Cfg.MetaDB || db == "" {
-			continue
-		}
-		if token.ReservedRe.MatchString(db) {
-			continue // our own (or a previous run's) sandbox DB
-		}
-		if len(wantDB) > 0 && !wantDB[db] {
-			continue
-		}
 		t := &Table{
 			Database: db, Name: str(row[1]), Engine: str(row[2]), EngineFull: str(row[3]),
 			CreateQuery: str(row[4]), PartitionKey: str(row[5]), SortingKey: str(row[6]),
@@ -122,22 +120,16 @@ func (r *Run) roster(ctx context.Context) error {
 		r.Tables = append(r.Tables, t)
 		r.byFull[t.Full()] = t
 	}
-	dbset := map[string]bool{}
-	for _, t := range r.Tables {
-		dbset[t.Database] = true
+	if len(r.Tables) == 0 {
+		return fmt.Errorf("phase1: source database %q does not exist or has no tables", db)
 	}
-	for d := range dbset {
-		r.ScopeDBs = append(r.ScopeDBs, d)
-	}
-	if len(r.ScopeDBs) == 0 {
-		return fmt.Errorf("phase1: no business databases in scope")
-	}
+	r.ScopeDBs = []string{db}
 	return nil
 }
 
 // columns: phase 3 — per-column metadata for every scope table.
 func (r *Run) columns(ctx context.Context) error {
-	rows, err := r.Ex.Query(ctx, fmt.Sprintf(`
+	rows, err := r.SrcEx.Query(ctx, fmt.Sprintf(`
 		SELECT database, table, name, type, position,
 		       is_in_partition_key, is_in_sorting_key, is_in_primary_key
 		FROM system.columns
@@ -198,7 +190,7 @@ func (r *Run) relations(ctx context.Context) error {
 		}
 	}
 	// dictionaries
-	rows, err := r.Ex.Query(ctx, fmt.Sprintf(
+	rows, err := r.SrcEx.Query(ctx, fmt.Sprintf(
 		"SELECT database, name, type, status FROM system.dictionaries WHERE database IN (%s)", inList(r.ScopeDBs)))
 	if err == nil {
 		for _, row := range rows.Data {
