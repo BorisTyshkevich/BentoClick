@@ -15,6 +15,15 @@ Two things must never meet in one principal:
 2. **Real data / real identifiers** — `SELECT` on the real data DB, or on the
    de-tokenized `dashboards` view.
 
+The hard case — the **same** `user@domain.com` reaching ClickHouse both
+directly (SPA → real data) and indirectly (LLM → MCP, no real data) — can't be
+solved by RBAC on one identity alone (a granted role is reachable via
+`SET ROLE` from either path). Two escapes: make the two paths **two identities**
+(Option C, implemented below — the LLM authors as `anon_author`), or keep one
+identity and scope authority by the **channel's token** (Option A, enforced by
+Antalya OIDC role mapping + Auth0 tuning — future, see
+[`OAUTH-ROLE-SEPARATION.md`](OAUTH-ROLE-SEPARATION.md)).
+
 The **LLM** is the untrusted actor: it must hold neither. The **human viewer**
 is trusted with real data (their own grants) but never needs token resolution.
 **anond** and the **bentoclick definer** are trusted machinery, each scoped to
