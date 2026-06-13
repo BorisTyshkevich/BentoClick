@@ -94,31 +94,79 @@ from the LLM-path session re-opens the hole. With no static grants, the
 authoring session simply has no `data_role` to activate. This is the one rule
 that makes A safe; it must be asserted and tested.
 
+## Which claim drives the role — and how consent gates it
+
+The role driver is the **consent-gated `scope` claim**, scoped by the
+**`audience`/resource** indicator — *not* `groups` (IdP org membership: same
+on every app, not consent-driven), and *not* the Auth0 RBAC **`permissions`**
+claim.
+
+- `audience`/resource selects the API → sets `aud` → (variant A1) picks the CH
+  `token_processor`. Each API owns its own scopes.
+- `scope` = requested ∩ consented (∩ assigned, when RBAC is on) → (variant A2)
+  maps to session roles. This is the claim that reflects "the user allowed
+  bentoclick data access, but not the LLM."
+- **Trap — avoid `permissions`.** Enabling Auth0 RBAC's "Add Permissions in
+  the Access Token" emits a `permissions` claim populated with *all* the
+  user's assigned permissions **without consent** — the LLM's token would then
+  carry the user's full data permissions. Drive CH off `scope`, never
+  `permissions`.
+
+**Consent is the UX layer; the Client Grant is the security ceiling.** Consent
+alone isn't a boundary (a user can be tricked into "allow"). The binding
+control is the per-client **Client Grant / API access policy**: the LLM client
+is authorized to request the authoring scope/audience **only**, so Auth0 won't
+issue it a data-scoped token regardless of what it asks or the user clicks
+(Auth0 documents Client Grants as "a permission ceiling … regardless of who
+logs in"). Ceiling it with the client grant; surface it via consent.
+
 ## Auth0 tuning
 
-1. **Two applications** (SPA, MCP), or one with per-client logic. The MCP
-   application is authorized (client grants) for the authoring API/scope
-   **only** — it cannot request the data audience/scope.
-2. **APIs / audiences**: define `https://clickhouse/data` and
-   `https://clickhouse/authoring` (for variant A1), and/or
-3. **Post-Login Action** (variant A2) keyed on `event.client.client_id` to set
-   a namespaced roles claim:
+1. **Two APIs / audiences**: `https://clickhouse/data` and
+   `https://clickhouse/authoring`, each with its scopes. `aud` (A1) or `scope`
+   (A2) is what CH reads.
+2. **Two clients, two ceilings (Client Grants)**: the bentoclick SPA client is
+   authorized for the data audience/scope; the LLM client for authoring
+   **only**. This ceiling — not consent — is what prevents the LLM from ever
+   obtaining data scope.
+3. **Consent**: shown per app for the requested scopes. NOTE first-party apps
+   skip consent by default — mark third-party or force consent on the API to
+   get the user-visible "allow extended access for bentoclick" prompt.
+4. **(A2 only) Post-Login Action** if mapping scope→a namespaced roles claim CH
+   reads, keyed on `event.client.client_id` / the granted scope:
    ```js
    exports.onExecutePostLogin = async (event, api) => {
      const ns = 'https://clickhouse/';
      const roles = event.client.client_id === MCP_CLIENT_ID
        ? ['anon_author_role']
-       : [...event.authorization.roles, 'bentoclick_anon_viewer_role']; // data path
-     api.accessToken.setCustomClaim(ns + 'roles', roles);
+       : [...event.authorization.roles, 'bentoclick_anon_viewer_role'];
+     api.accessToken.setCustomClaim(ns + 'roles', roles); // namespaced claim
    };
    ```
-   (Auth0 requires namespaced custom claims; CH's processor must read that
-   exact claim name.)
-4. **Optional rigor — RFC 8693 actor token.** If the MCP performs token
-   exchange (delegation), the token carries `act` (actor = MCP, `sub` = user).
-   The Action can additionally require `act` *absent* before adding data
-   roles, so authority reduction is bound to "a deputy is acting," not just to
-   a client id.
+5. **Optional rigor — RFC 8693 actor token.** If the MCP performs token
+   exchange, the token carries `act` (actor = MCP, `sub` = user); the Action
+   can require `act` *absent* before adding data roles, binding the reduction
+   to "a deputy is acting," not just a client id.
+
+## Broker topology caveat (otel runs `broker: true`)
+
+The crisp "two Auth0 apps, two consent screens" model is literal only if the
+LLM connector talks to Auth0 **directly**. In otel's broker mode, altinity-mcp
+is the OAuth AS to the MCP clients (ChatGPT/Claude via CIMD) and brokers Auth0
+upstream — so the LLM path's *Auth0-facing* client is **altinity-mcp's upstream
+client**, not a per-connector Auth0 app. Consequences:
+
+- The split becomes: bentoclick SPA = its own Auth0 client (data ceiling);
+  altinity-mcp's upstream client = authoring ceiling. The "deny data to the
+  LLM" guarantee comes from the **client-grant ceiling on the broker's
+  upstream client**.
+- The LLM-facing consent the user sees is the **MCP `/authorize` screen**; the
+  Auth0 consent is for the broker. Per-connector (ChatGPT vs Claude)
+  granularity lives at the MCP/CIMD layer, where all LLM connectors share the
+  authoring ceiling.
+- Verify: what `audience`/`scope` does altinity-mcp request upstream when
+  acting for an LLM client, and can that be pinned to authoring-only per the
+  broker config?
 
 ## Risks & failure modes
 
@@ -161,6 +209,12 @@ deployments.
    far is the deployment from the zero-static-grants invariant?
 4. Is RFC 8693 token exchange (the `act` claim) available on the Auth0 tier in
    use, and is it worth the rigor over per-`client_id` logic?
+5. In broker mode, what `audience`/`scope` does altinity-mcp request from Auth0
+   when acting for an LLM client, and can the broker pin it to authoring-only
+   (the client-grant ceiling on the broker's upstream client)?
+6. Are bentoclick + the LLM connector first-party (consent skipped) or
+   third-party in the Auth0 tenant — and where does the LLM-facing consent
+   actually render (MCP `/authorize` vs Auth0)?
 
 ## References
 
