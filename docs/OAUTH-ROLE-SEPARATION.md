@@ -112,6 +112,28 @@ claim.
   carry the user's full data permissions. Drive CH off `scope`, never
   `permissions`.
 
+### Why `scope`, not `audience`
+
+ClickHouse is **one resource** — same cluster, same token endpoint, same
+`currentUser`; the dashboards table and the real data live together and the
+de-tok view reads both. "Read real data" vs "write tokenized dashboards" are
+two **privilege levels on that one resource**, which is exactly what `scope`
+models. `audience` answers a different question — *which* resource the token
+is for — so separating by audience means inventing two pseudo-APIs
+(`clickhouse/data`, `clickhouse/authoring`) for one server just to carry the
+privilege level in `aud`. Scopes are also what render on the consent screen,
+so the consent-driven split is naturally a scope grant.
+
+`audience` still has two legitimate roles, both complementary (a token has one
+`aud` *and* several scopes): (1) the **fallback driver** when CH can only
+assign fixed `common_roles` per audience-matched `token_processor` (variant
+A1) — there `aud` becomes the de-facto driver because CH can't read
+`scope`→roles, not because it's the better model; (2) **defense-in-depth** — a
+distinct `aud` lets a resource hard-reject a token not meant for it before any
+scope logic, bounding replay. Net: `scope` is the correct primitive; which
+claim you *actually* key on depends on what Antalya's `token_processor` can
+read (A2 reads scope/claim, A1 routes by `aud`).
+
 **Consent is the UX layer; the Client Grant is the security ceiling.** Consent
 alone isn't a boundary (a user can be tricked into "allow"). The binding
 control is the per-client **Client Grant / API access policy**: the LLM client
