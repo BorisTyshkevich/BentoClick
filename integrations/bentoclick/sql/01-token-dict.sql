@@ -20,9 +20,12 @@
 -- dictGet on it ONLY to ${DB}_definer (the de-tok view's definer). The
 -- LLM's authoring role and ordinary viewers must NOT hold it — they never
 -- resolve tokens directly; the DEFINER view does it on their behalf.
--- (The dictionary's own CLICKHOUSE source reads identifier_map with the
--- server's internal credentials; ensure that principal can SELECT
--- ${META_DB}.identifier_map.)
+--
+-- The CLICKHOUSE source authenticates as the dedicated `anon_dict_reader`
+-- user via the `anon_dict_src` NAMED COLLECTION (created in 00-anon-rbac.sql)
+-- — NOT the server's internal credentials. The collection holds the
+-- credentials server-side, so SHOW CREATE DICTIONARY leaks neither the
+-- password nor any real name (verified on CH 26.3). See docs/RBAC.md.
 
 CREATE DICTIONARY IF NOT EXISTS ${META_DB}.token_to_real
   ON CLUSTER '{cluster}'
@@ -31,7 +34,7 @@ CREATE DICTIONARY IF NOT EXISTS ${META_DB}.token_to_real
     original String
 )
 PRIMARY KEY token
-SOURCE(CLICKHOUSE(QUERY
+SOURCE(CLICKHOUSE(NAME anon_dict_src QUERY
   'SELECT token, any(original) AS original FROM ${META_DB}.identifier_map GROUP BY token'))
 LAYOUT(COMPLEX_KEY_HASHED())
 LIFETIME(MIN 300 MAX 600);

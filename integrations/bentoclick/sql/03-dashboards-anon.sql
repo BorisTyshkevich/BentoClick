@@ -101,13 +101,7 @@ SELECT
     updated_at
 FROM ${DB}.dashboards_tok FINAL;
 
--- 5. Grants.
---   Definer reads the tokenized store and resolves tokens; nothing else.
-GRANT SELECT ON ${DB}.dashboards_tok      TO ${DB}_definer ON CLUSTER '{cluster}';
-GRANT dictGet ON ${META_DB}.token_to_real TO ${DB}_definer ON CLUSTER '{cluster}';
---   Role hygiene (apply with your deployment's role names; principle stated
---   in the design doc):
---     LLM authoring role : INSERT ON ${DB}.dashboards_raw, SELECT ON ${DB}.dashboards_tok
---                          (tokens only) — and NO access to ${DB}.dashboards,
---                          ${META_DB}.token_to_real, or ${META_DB}.identifier_map.
---     SPA / viewer role  : SELECT ON ${DB}.dashboards (the de-tok view) only.
+-- 5. Grants live in 00-anon-rbac.sql (applied first): the definer's
+--    SELECT dashboards_tok + dictGet token_to_real, the LLM anon_author_role,
+--    and the viewer role. Keeping all RBAC in one file is deliberate — see
+--    docs/RBAC.md for the full principal × privilege matrix.

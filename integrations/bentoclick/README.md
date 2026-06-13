@@ -102,6 +102,10 @@ Verified on CH 26.3:
 
 ## Security (grant hygiene is the whole argument)
 
+The full least-privilege model across both clusters — every principal, what it
+may touch, and the verify checklist — is in [`../../docs/RBAC.md`](../../docs/RBAC.md).
+The essentials:
+
 The de-tok view is `SQL SECURITY DEFINER`, so:
 
 - only `${DB}_definer` holds `dictGet` on `token_to_real` (and the dictionary
@@ -137,9 +141,10 @@ dictionary's `LIFETIME` picks up additions automatically.
 - **The MV body in `03-…sql` is reproduced from bentoclick v0.1.0.** Re-point
   must match the *installed* version's `dashboards_mv` SELECT (only the `TO`
   target changes). Diff before applying to a newer install.
-- **Dictionary source auth**: the `CLICKHOUSE(QUERY …)` source reads
-  `identifier_map` with the server's internal credentials; confirm that
-  principal can `SELECT` it on the target cluster.
+- ~~Dictionary source auth~~ — resolved: the source authenticates as the
+  dedicated `anon_dict_reader` via the `anon_dict_src` named collection
+  (`sql/00-anon-rbac.sql`); credentials are server-side and leak nowhere.
+  Full model in [`../../docs/RBAC.md`](../../docs/RBAC.md).
 - **The LLM authoring transport** (anonymized-mode altinity-mcp that exposes
   only the tokenized tier + the anond sandbox/profile, and refuses otel's
   real tables) is the deferred anond-MCP work; until then specs can be
