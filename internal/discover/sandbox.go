@@ -220,20 +220,29 @@ func (r *Run) sandbox(ctx context.Context, plans []*tablePlan) error {
 			return fmt.Errorf("sandbox create %s: %w", fullTok, err)
 		}
 
-		// populate — the masked SELECT (seed + real names) runs on the SOURCE;
-		// only masked TSV crosses to the dest. Positional insert: the SELECT
-		// emits the included columns in table-definition order. Output types
-		// parse back from TSV by construction (kept types are identical;
-		// hashed → UInt64/String; attrmap → Map(K, String)).
+		// populate — the masked SELECT (seed + real names) is evaluated inside
+		// ClickHouse; real values never reach this process. Same-cluster uses a
+		// server-side INSERT ... SELECT; cross-cluster streams masked TSV.
 		populate := func(where string) error {
 			sel := fmt.Sprintf("SELECT %s FROM %s.%s%s LIMIT %d",
 				strings.Join(exprs, ", "),
 				qident(p.T.Database), qident(p.T.Name), where, r.Cfg.SampleRows)
+			dst := qident(sbDB) + "." + qident(p.TblTok)
+			if r.Cfg.Source == r.Cfg.Dest {
+				// Same cluster: copy entirely server-side via INSERT ... SELECT —
+				// no Go round-trip, no TSV. The masked SELECT (seed + real names)
+				// runs inside ClickHouse only. An empty result inserts 0 rows
+				// (no error), so the count()==0 fallback below still applies.
+				return r.DstEx.Exec(ctx, "INSERT INTO "+dst+" "+sel)
+			}
+			// Cross-cluster: stream masked TSV from source to dest; only masked
+			// rows cross the wire. Positional insert (SELECT emits columns in
+			// table-definition order; types parse back from TSV by construction).
 			rc, err := r.SrcEx.QueryStream(ctx, sel)
 			if err != nil {
 				return err
 			}
-			insErr := r.DstEx.InsertStream(ctx, qident(sbDB)+"."+qident(p.TblTok), nil, rc)
+			insErr := r.DstEx.InsertStream(ctx, dst, nil, rc)
 			if cerr := rc.Close(); insErr == nil {
 				insErr = cerr // surface a source-side failure too
 			}
