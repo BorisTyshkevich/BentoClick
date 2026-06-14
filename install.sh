@@ -38,6 +38,10 @@ CLUSTER="{cluster}"
 MIGRATE_FROM=""
 BRAND_NAME="bentoclick"
 ACCENT="#00d4aa"
+# Static OAuth client registered with the AS (Auth0). CIMD is reserved for
+# the MCP's dynamic clients; this SPA uses a real registered app instead.
+OAUTH_CLIENT_ID=""
+OAUTH_AUDIENCE=""
 
 # ---- arg parse ----
 for arg in "$@"; do
@@ -52,6 +56,8 @@ for arg in "$@"; do
     --migrate-from=*) MIGRATE_FROM="${arg#*=}" ;;
     --brand-name=*)   BRAND_NAME="${arg#*=}" ;;
     --accent=*)       ACCENT="${arg#*=}" ;;
+    --oauth-client-id=*) OAUTH_CLIENT_ID="${arg#*=}" ;;
+    --oauth-audience=*)  OAUTH_AUDIENCE="${arg#*=}" ;;
     *) echo "ERROR: unknown arg: $arg" >&2; exit 2 ;;
   esac
 done
@@ -306,6 +312,8 @@ sed -e "s|\${CH_URL}|${CH_HOST}|g" \
     -e "s|\${DB}|${DB}|g" \
     -e "s|\${BRAND_NAME}|${BRAND_NAME}|g" \
     -e "s|\${ACCENT}|${ACCENT}|g" \
+    -e "s|\${OAUTH_CLIENT_ID}|${OAUTH_CLIENT_ID}|g" \
+    -e "s|\${OAUTH_AUDIENCE}|${OAUTH_AUDIENCE}|g" \
     config/config.json.tmpl > "$tmp_config"
 ch_file_upload "dash/config.json" "$tmp_config"
 

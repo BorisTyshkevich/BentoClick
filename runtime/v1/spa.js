@@ -191,18 +191,18 @@ async function discoverAS() {
   return meta;
 }
 
-// CIMD-only: SPA's client_id is the URL of its own /oauth/client.json.
+// Static client: the SPA's client_id is a fixed OAuth client registered with
+// the AS (Auth0), served in config.json as `oauth_client_id`. CIMD is reserved
+// for the MCP's dynamic clients; a SPA we control gets a real registered app.
 function oauthClientId() {
-  var cid = location.origin + CIMD_PATH;
+  var cid = CFG && CFG.oauth_client_id;
+  if (!cid) throw new Error('config.json missing oauth_client_id');
   lsSet(CLIENT_KEY, cid);
   return cid;
 }
 
 async function startAuth(returnTo) {
   var meta = await discoverAS();
-  if (meta.client_id_metadata_document_supported !== true) {
-    throw new Error('Authorization server does not support CIMD (client_id_metadata_document_supported != true). dash requires CIMD.');
-  }
   var cid = oauthClientId();
   var v = randVerifier();
   ssSet(VER_KEY, v);
@@ -220,10 +220,12 @@ async function startAuth(returnTo) {
   u.searchParams.set('code_challenge', c);
   u.searchParams.set('code_challenge_method', 'S256');
   u.searchParams.set('state', state);
-  u.searchParams.set('scope', 'openid email');
-  // RFC 8707 Resource Indicator. Required so the AS issues a token whose
-  // `aud` byte-equals the MCP URL (matches MCP's RFC 9728 advertisement).
-  u.searchParams.set('resource', MCP + '/');
+  u.searchParams.set('scope', 'openid email offline_access');
+  // Auth0: `audience` selects the API whose identifier becomes the JWT `aud`,
+  // which CH's <token_processor expected_audience> byte-matches. Auth0 uses
+  // `audience` (not the RFC 8707 `resource` param) to mint API access tokens.
+  var aud = (CFG && CFG.oauth_audience) || (MCP + '/');
+  u.searchParams.set('audience', aud);
   location.replace(u.toString());
 }
 
