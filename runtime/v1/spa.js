@@ -226,6 +226,10 @@ async function startAuth(returnTo) {
   // `audience` (not the RFC 8707 `resource` param) to mint API access tokens.
   var aud = (CFG && CFG.oauth_audience) || (MCP + '/');
   u.searchParams.set('audience', aud);
+  // Auth0 Organizations: scope the login to this tenant's org. Membership is
+  // the hard allowlist (non-members are rejected at login); org-scoped roles
+  // assigned in the Auth0 UI drive CH access via the roles claim.
+  if (CFG && CFG.oauth_organization) u.searchParams.set('organization', CFG.oauth_organization);
   location.replace(u.toString());
 }
 

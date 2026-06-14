@@ -42,6 +42,7 @@ ACCENT="#00d4aa"
 # the MCP's dynamic clients; this SPA uses a real registered app instead.
 OAUTH_CLIENT_ID=""
 OAUTH_AUDIENCE=""
+OAUTH_ORGANIZATION=""
 
 # ---- arg parse ----
 for arg in "$@"; do
@@ -58,6 +59,7 @@ for arg in "$@"; do
     --accent=*)       ACCENT="${arg#*=}" ;;
     --oauth-client-id=*) OAUTH_CLIENT_ID="${arg#*=}" ;;
     --oauth-audience=*)  OAUTH_AUDIENCE="${arg#*=}" ;;
+    --oauth-organization=*) OAUTH_ORGANIZATION="${arg#*=}" ;;
     *) echo "ERROR: unknown arg: $arg" >&2; exit 2 ;;
   esac
 done
@@ -314,6 +316,7 @@ sed -e "s|\${CH_URL}|${CH_HOST}|g" \
     -e "s|\${ACCENT}|${ACCENT}|g" \
     -e "s|\${OAUTH_CLIENT_ID}|${OAUTH_CLIENT_ID}|g" \
     -e "s|\${OAUTH_AUDIENCE}|${OAUTH_AUDIENCE}|g" \
+    -e "s|\${OAUTH_ORGANIZATION}|${OAUTH_ORGANIZATION}|g" \
     config/config.json.tmpl > "$tmp_config"
 ch_file_upload "dash/config.json" "$tmp_config"
 
