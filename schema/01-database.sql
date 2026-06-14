@@ -191,7 +191,7 @@ CREATE OR REPLACE VIEW ${DB}.dashboards_prefix
 SELECT
     currentUser()                                              AS owner,
     '${SPA_ORIGIN}'                                            AS spa_origin,
-    concat('${SPA_ORIGIN}', '/v/',
+    concat('${SPA_ORIGIN}', '/b/v/',
            encodeURLComponent(currentUser()), '/')             AS my_dashboards_prefix;
 
 DROP VIEW IF EXISTS ${DB}.whoami ON CLUSTER '{cluster}';

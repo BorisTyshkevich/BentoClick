@@ -355,4 +355,4 @@ for spec in samples/*.spec.json; do
   echo "    + $slug"
 done
 
-echo "==> done. Open ${SPA_ORIGIN}/app to see your dashboards."
+echo "==> done. Open ${SPA_ORIGIN}/b/app to see your dashboards."

@@ -86,7 +86,7 @@
   // Required so AS issues a token whose `aud` matches the MCP advertisement.
   var mcpUrl = "";
   try {
-    var cfg = await fetch("/config.json", { headers: { "Accept": "application/json" }, cache: "no-store" });
+    var cfg = await fetch("/b/config.json", { headers: { "Accept": "application/json" }, cache: "no-store" });
     if (cfg.ok) {
       var j = await cfg.json();
       mcpUrl = (j.mcp_url || "").replace(/\/$/, "");
@@ -103,7 +103,7 @@
     body: new URLSearchParams({
       grant_type: "authorization_code",
       code: code,
-      redirect_uri: location.origin + "/oauth/callback",
+      redirect_uri: location.origin + "/b/oauth/callback",
       client_id: clientId,
       code_verifier: verifier,
       resource: mcpUrl + "/"

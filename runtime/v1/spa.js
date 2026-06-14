@@ -37,7 +37,11 @@ var CID_KEY   = 'mcp_cid_v3';
 var CLIENT_KEY = 'mcp_oauth_client_id';
 var OLD_AS_KEY = 'mcp_as_meta';
 var AS_KEY    = 'mcp_as_meta_v2';
-var CIMD_PATH = '/oauth/client.json';
+// BASE — URL path prefix this SPA is mounted under (otel install serves it
+// under /b/ to coexist with the legacy /v/ dashboard prototype). All absolute
+// SPA paths (routes, assets, config, OAuth) are built relative to BASE.
+var BASE      = '/b';
+var CIMD_PATH = BASE + '/oauth/client.json';
 var VER_KEY   = 'pkce_v';
 var STATE_KEY = 'pkce_state';
 // SAFE: allow chars that appear in an email localpart (+) and in full-email
@@ -108,7 +112,7 @@ function withTimeout(input, init) {
 // Loaded at startup. Server-side `Cache-Control: no-store` makes re-config
 // fast: reload the page after `INSERT INTO FUNCTION file('dash/config.json', ...)`.
 async function loadConfig() {
-  var r = await withTimeout('/config.json', { headers: { 'Accept': 'application/json' }, cache: 'no-store' });
+  var r = await withTimeout(BASE + '/config.json', { headers: { 'Accept': 'application/json' }, cache: 'no-store' });
   if (!r.ok) throw new Error('config.json fetch failed: HTTP ' + r.status);
   var j = await r.json();
   if (!j.mcp_url || !j.ch_url) throw new Error('config.json missing mcp_url or ch_url');
@@ -121,6 +125,7 @@ async function loadConfig() {
 
 function parseRoute() {
   var p = location.pathname;
+  if (BASE && p.indexOf(BASE) === 0) p = p.slice(BASE.length) || '/';  // strip mount prefix
   var q = new URLSearchParams(location.search);
   var m;
   if ((m = p.match(/^\/v\/([^\/]+)\/([^\/]+)\/?$/))) {
@@ -210,7 +215,7 @@ async function startAuth(returnTo) {
   var c = await challenge(v);
   var u = new URL(meta.authorization_endpoint);
   u.searchParams.set('client_id', cid);
-  u.searchParams.set('redirect_uri', location.origin + '/oauth/callback');
+  u.searchParams.set('redirect_uri', location.origin + BASE + '/oauth/callback');
   u.searchParams.set('response_type', 'code');
   u.searchParams.set('code_challenge', c);
   u.searchParams.set('code_challenge_method', 'S256');
@@ -324,7 +329,7 @@ async function synthesizeSpecWrapper(spec) {
     // a fresh body — one small round-trip per /v/ load. Default cache
     // mode (and the prior `force-cache`) pinned stale runtime bytes
     // for the full max-age after a deploy.
-    var r = await withTimeout('/lib/v1' + path,
+    var r = await withTimeout(BASE + '/lib/v1' + path,
       { headers: { 'Accept': 'application/javascript' }, cache: 'no-cache' });
     if (!r.ok) throw new Error('runtime fetch failed: ' + path + ' HTTP ' + r.status);
     return r.text();
@@ -359,7 +364,7 @@ async function synthesizeSpecWrapper(spec) {
   return ''
     + '<!doctype html><html lang="en"><head>'
     + '<meta charset="utf-8">'
-    + '<link rel="stylesheet" href="' + origin + '/lib/v1/dash-theme.css">'
+    + '<link rel="stylesheet" href="' + origin + BASE + '/lib/v1/dash-theme.css">'
     + '</head><body>'
     + '<div id="dash-root"></div>'
     + '<script>\n' + tweaksBoot + '\n<\/script>'
@@ -562,7 +567,7 @@ async function renderIndex() {
       return;
     }
     rowsEl.innerHTML = rs.map(function(r) {
-      var href = '/v/' + encodeURIComponent(r.owner || '') + '/' + encodeURIComponent(r.slug || '');
+      var href = BASE + '/v/' + encodeURIComponent(r.owner || '') + '/' + encodeURIComponent(r.slug || '');
       var tags = (r.tags || []).map(function(t){ return '<span class="tag">' + escHtml(t) + '</span>'; }).join('');
       var updated = String(r.updated_at || '').slice(0, 16).replace('T', ' ');
       return '<tr>' +
