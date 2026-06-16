@@ -37,7 +37,11 @@ var CID_KEY   = 'mcp_cid_v3';
 var CLIENT_KEY = 'mcp_oauth_client_id';
 var OLD_AS_KEY = 'mcp_as_meta';
 var AS_KEY    = 'mcp_as_meta_v2';
-var CIMD_PATH = '/oauth/client.json';
+// BASE — URL path prefix this SPA is mounted under (otel install serves it
+// under /b/ to coexist with the legacy /v/ dashboard prototype). All absolute
+// SPA paths (routes, assets, config, OAuth) are built relative to BASE.
+var BASE      = '/b';
+var CIMD_PATH = BASE + '/oauth/client.json';
 var VER_KEY   = 'pkce_v';
 var STATE_KEY = 'pkce_state';
 // SAFE: allow chars that appear in an email localpart (+) and in full-email
@@ -108,7 +112,7 @@ function withTimeout(input, init) {
 // Loaded at startup. Server-side `Cache-Control: no-store` makes re-config
 // fast: reload the page after `INSERT INTO FUNCTION file('dash/config.json', ...)`.
 async function loadConfig() {
-  var r = await withTimeout('/config.json', { headers: { 'Accept': 'application/json' }, cache: 'no-store' });
+  var r = await withTimeout(BASE + '/config.json', { headers: { 'Accept': 'application/json' }, cache: 'no-store' });
   if (!r.ok) throw new Error('config.json fetch failed: HTTP ' + r.status);
   var j = await r.json();
   if (!j.mcp_url || !j.ch_url) throw new Error('config.json missing mcp_url or ch_url');
@@ -121,6 +125,7 @@ async function loadConfig() {
 
 function parseRoute() {
   var p = location.pathname;
+  if (BASE && p.indexOf(BASE) === 0) p = p.slice(BASE.length) || '/';  // strip mount prefix
   var q = new URLSearchParams(location.search);
   var m;
   if ((m = p.match(/^\/v\/([^\/]+)\/([^\/]+)\/?$/))) {
@@ -186,18 +191,18 @@ async function discoverAS() {
   return meta;
 }
 
-// CIMD-only: SPA's client_id is the URL of its own /oauth/client.json.
+// Static client: the SPA's client_id is a fixed OAuth client registered with
+// the AS (Auth0), served in config.json as `oauth_client_id`. CIMD is reserved
+// for the MCP's dynamic clients; a SPA we control gets a real registered app.
 function oauthClientId() {
-  var cid = location.origin + CIMD_PATH;
+  var cid = CFG && CFG.oauth_client_id;
+  if (!cid) throw new Error('config.json missing oauth_client_id');
   lsSet(CLIENT_KEY, cid);
   return cid;
 }
 
 async function startAuth(returnTo) {
   var meta = await discoverAS();
-  if (meta.client_id_metadata_document_supported !== true) {
-    throw new Error('Authorization server does not support CIMD (client_id_metadata_document_supported != true). dash requires CIMD.');
-  }
   var cid = oauthClientId();
   var v = randVerifier();
   ssSet(VER_KEY, v);
@@ -210,15 +215,21 @@ async function startAuth(returnTo) {
   var c = await challenge(v);
   var u = new URL(meta.authorization_endpoint);
   u.searchParams.set('client_id', cid);
-  u.searchParams.set('redirect_uri', location.origin + '/oauth/callback');
+  u.searchParams.set('redirect_uri', location.origin + BASE + '/oauth/callback');
   u.searchParams.set('response_type', 'code');
   u.searchParams.set('code_challenge', c);
   u.searchParams.set('code_challenge_method', 'S256');
   u.searchParams.set('state', state);
-  u.searchParams.set('scope', 'openid email');
-  // RFC 8707 Resource Indicator. Required so the AS issues a token whose
-  // `aud` byte-equals the MCP URL (matches MCP's RFC 9728 advertisement).
-  u.searchParams.set('resource', MCP + '/');
+  u.searchParams.set('scope', 'openid email offline_access');
+  // Auth0: `audience` selects the API whose identifier becomes the JWT `aud`,
+  // which CH's <token_processor expected_audience> byte-matches. Auth0 uses
+  // `audience` (not the RFC 8707 `resource` param) to mint API access tokens.
+  var aud = (CFG && CFG.oauth_audience) || (MCP + '/');
+  u.searchParams.set('audience', aud);
+  // Auth0 Organizations: scope the login to this tenant's org. Membership is
+  // the hard allowlist (non-members are rejected at login); org-scoped roles
+  // assigned in the Auth0 UI drive CH access via the roles claim.
+  if (CFG && CFG.oauth_organization) u.searchParams.set('organization', CFG.oauth_organization);
   location.replace(u.toString());
 }
 
@@ -324,7 +335,7 @@ async function synthesizeSpecWrapper(spec) {
     // a fresh body — one small round-trip per /v/ load. Default cache
     // mode (and the prior `force-cache`) pinned stale runtime bytes
     // for the full max-age after a deploy.
-    var r = await withTimeout('/lib/v1' + path,
+    var r = await withTimeout(BASE + '/lib/v1' + path,
       { headers: { 'Accept': 'application/javascript' }, cache: 'no-cache' });
     if (!r.ok) throw new Error('runtime fetch failed: ' + path + ' HTTP ' + r.status);
     return r.text();
@@ -359,7 +370,7 @@ async function synthesizeSpecWrapper(spec) {
   return ''
     + '<!doctype html><html lang="en"><head>'
     + '<meta charset="utf-8">'
-    + '<link rel="stylesheet" href="' + origin + '/lib/v1/dash-theme.css">'
+    + '<link rel="stylesheet" href="' + origin + BASE + '/lib/v1/dash-theme.css">'
     + '</head><body>'
     + '<div id="dash-root"></div>'
     + '<script>\n' + tweaksBoot + '\n<\/script>'
@@ -562,7 +573,7 @@ async function renderIndex() {
       return;
     }
     rowsEl.innerHTML = rs.map(function(r) {
-      var href = '/v/' + encodeURIComponent(r.owner || '') + '/' + encodeURIComponent(r.slug || '');
+      var href = BASE + '/v/' + encodeURIComponent(r.owner || '') + '/' + encodeURIComponent(r.slug || '');
       var tags = (r.tags || []).map(function(t){ return '<span class="tag">' + escHtml(t) + '</span>'; }).join('');
       var updated = String(r.updated_at || '').slice(0, 16).replace('T', ' ');
       return '<tr>' +

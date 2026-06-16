@@ -40,7 +40,7 @@
     <http_handlers>
         <!-- SPA shell. Route parsing happens in spa.js. -->
         <rule name="bentoclick-spa-shell">
-            <url><![CDATA[regex:^(/app|/v/[^/]+/[^/]+)/?(\?.*)?$]]></url>
+            <url><![CDATA[regex:^(/b/app|/b/v/[^/]+/[^/]+)/?(\?.*)?$]]></url>
             <methods>GET</methods>
             <handler>
                 <type>static</type>
@@ -69,7 +69,7 @@
 
         <!-- SPA bootstrap JS. Versioned alongside the shell. -->
         <rule name="bentoclick-spa-js">
-            <url><![CDATA[regex:^/lib/v1/spa\.js$]]></url>
+            <url><![CDATA[regex:^/b/lib/v1/spa\.js$]]></url>
             <methods>GET</methods>
             <handler>
                 <type>static</type>
@@ -86,7 +86,7 @@
              opener. CSP is tighter than the SPA shell since no third-party
              scripts run here. -->
         <rule name="bentoclick-oauth-callback">
-            <url><![CDATA[regex:^/oauth/callback(\?.*)?$]]></url>
+            <url><![CDATA[regex:^/b/oauth/callback(\?.*)?$]]></url>
             <methods>GET</methods>
             <handler>
                 <type>static</type>
@@ -102,7 +102,7 @@
 
         <!-- Shared dashboard runtime + theme. Cached. Versioned via /lib/vN/. -->
         <rule name="bentoclick-dash-js">
-            <url><![CDATA[regex:^/lib/v1/dash\.js$]]></url>
+            <url><![CDATA[regex:^/b/lib/v1/dash\.js$]]></url>
             <methods>GET</methods>
             <handler>
                 <type>static</type>
@@ -119,7 +119,7 @@
              resolves; the iframe boot path fetches it explicitly via
              synthesizeSpecWrapper(). -->
         <rule name="bentoclick-charts-js">
-            <url><![CDATA[regex:^/lib/v1/charts\.js$]]></url>
+            <url><![CDATA[regex:^/b/lib/v1/charts\.js$]]></url>
             <methods>GET</methods>
             <handler>
                 <type>static</type>
@@ -136,7 +136,7 @@
              tests can import them directly and v8 coverage tracks the
              actual file (source-slicing tests don't count). -->
         <rule name="bentoclick-spa-helpers-js">
-            <url><![CDATA[regex:^/lib/v1/spa-helpers\.js$]]></url>
+            <url><![CDATA[regex:^/b/lib/v1/spa-helpers\.js$]]></url>
             <methods>GET</methods>
             <handler>
                 <type>static</type>
@@ -149,7 +149,7 @@
         </rule>
 
         <rule name="bentoclick-dash-theme-css">
-            <url><![CDATA[regex:^/lib/v1/dash-theme\.css$]]></url>
+            <url><![CDATA[regex:^/b/lib/v1/dash-theme\.css$]]></url>
             <methods>GET</methods>
             <handler>
                 <type>static</type>
@@ -166,7 +166,7 @@
              not part of the dashboard iframe srcdoc bundle. no-store
              since edits are frequent during UI work. -->
         <rule name="bentoclick-tweaks-js">
-            <url><![CDATA[regex:^/lib/v1/tweaks\.js$]]></url>
+            <url><![CDATA[regex:^/b/lib/v1/tweaks\.js$]]></url>
             <methods>GET</methods>
             <handler>
                 <type>static</type>
@@ -182,7 +182,7 @@
              Re-config is `INSERT INTO FUNCTION file('dash/config.json', ...)`
              plus an immediate browser refresh (no-store). -->
         <rule name="bentoclick-config-json">
-            <url><![CDATA[regex:^/config\.json$]]></url>
+            <url><![CDATA[regex:^/b/config\.json$]]></url>
             <methods>GET</methods>
             <handler>
                 <type>static</type>
@@ -197,7 +197,7 @@
         <!-- CIMD client metadata document. The SPA uses this URL as its
              client_id when calling /oauth/authorize on the AS. -->
         <rule name="bentoclick-oauth-client-json">
-            <url><![CDATA[regex:^/oauth/client\.json$]]></url>
+            <url><![CDATA[regex:^/b/oauth/client\.json$]]></url>
             <methods>GET</methods>
             <handler>
                 <type>static</type>
