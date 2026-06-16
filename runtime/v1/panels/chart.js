@@ -97,7 +97,7 @@ export function renderChart(panel, state, ctx) {
     const { ticks, scale: yScale } = yScaleFromValues(values, root.ih);
     root.plot.appendChild(axisY({ ticks, scale: yScale, iw: root.iw, ih: root.ih, format: yFmt }));
     root.plot.appendChild(axisBottom({ ticks: pickXTicks(labels), scale: xScale, iw: root.iw, ih: root.ih, format: xFmt }));
-    const bw = xScale.bandwidth;
+    const bw = Math.min(xScale.bandwidth, 32);
     const zeroY = yScale(0);
     rows.forEach((r, i) => {
       const cx = xScale(labels[i]);

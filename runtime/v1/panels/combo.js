@@ -65,7 +65,7 @@ export function renderCombo(panel, state, ctx) {
     }
     root.plot.appendChild(axisBottom({ ticks: pickXTicks(xs), scale: xScale, iw: root.iw, ih: root.ih, format: xFmt }));
 
-    const bw = xScale.bandwidth;
+    const bw = Math.min(xScale.bandwidth, 32);
     const zeroY = lScale(0);
     rows.forEach((r, i) => {
       const v = barVals[i];
