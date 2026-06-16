@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>anond — Anonymized ClickHouse Discovery: Architecture</title>
+<style>
+  :root {
+    --trusted: #2563a8;
+    --trusted-bg: #edf4fb;
+    --trusted-bg2: #dce9f8;
+    --untrusted: #b45309;
+    --untrusted-bg: #fdf4e4;
+    --boundary: #cc2b2b;
+    --ink: #1f2a37;
+    --muted: #5b6470;
+    --rule: #d9dee5;
+  }
+  html { background: #f6f7f9; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, sans-serif;
+    color: var(--ink);
+    margin: 0;
+    line-height: 1.55;
+  }
+  main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 2.5rem 2rem 5rem;
+    background: #ffffff;
+    box-shadow: 0 0 24px rgba(31, 42, 55, 0.06);
+  }
+  h1 {
+    font-size: 1.9rem;
+    margin: 0 0 0.25rem;
+    letter-spacing: -0.01em;
+  }
+  .subtitle {
+    color: var(--muted);
+    margin: 0 0 2.2rem;
+    font-size: 1.02rem;
+  }
+  h2 {
+    font-size: 1.35rem;
+    margin: 2.8rem 0 0.8rem;
+    padding-top: 0.6rem;
+    border-top: 1px solid var(--rule);
+    letter-spacing: -0.005em;
+  }
+  h3 { font-size: 1.05rem; margin: 1.6rem 0 0.5rem; }
+  p { margin: 0.7rem 0; }
+  code, .tok {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.88em;
+    background: #f1f3f6;
+    border-radius: 4px;
+    padding: 0.08em 0.35em;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1rem 0 1.4rem;
+    font-size: 0.93rem;
+  }
+  th, td {
+    border: 1px solid var(--rule);
+    padding: 0.5rem 0.7rem;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f1f4f8; font-weight: 600; }
+  tbody tr:nth-child(even) td { background: #fafbfc; }
+  td.never { background: #fdf0f0 !important; }
+  td.crosses { background: #f0f7f0 !important; }
+  figure { margin: 1.4rem 0; }
+  figure svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    background: #ffffff;
+  }
+  figcaption {
+    color: var(--muted);
+    font-size: 0.88rem;
+    margin-top: 0.5rem;
+  }
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.2rem;
+    font-size: 0.86rem;
+    color: var(--muted);
+    margin: 0.5rem 0 0;
+    align-items: center;
+  }
+  .chip {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border-radius: 3px;
+    margin-right: 0.4rem;
+    vertical-align: -2px;
+  }
+  .chip-trusted   { background: var(--trusted-bg);   border: 1.5px solid var(--trusted); }
+  .chip-untrusted { background: var(--untrusted-bg); border: 1.5px solid var(--untrusted); }
+  .chip-boundary  { background: #fff; border-top: 2.5px dashed var(--boundary);
+                    height: 0; width: 22px; border-radius: 0; }
+  ul { padding-left: 1.3rem; }
+  li { margin: 0.35rem 0; }
+  .callout {
+    border-left: 4px solid var(--trusted);
+    background: var(--trusted-bg);
+    padding: 0.7rem 1rem;
+    border-radius: 0 6px 6px 0;
+    margin: 1rem 0;
+    font-size: 0.95rem;
+  }
+</style>
+</head>
+<body>
+<main>
+
+<h1>anond — anonymized ClickHouse discovery &amp; sandbox</h1>
+<p class="subtitle">Architecture reference · v1.1 cross-cluster target state ·
+single-database mirror semantics (source <code>claude_otel</code> → sandbox
+<code>claude_otel</code>)</p>
+
+<!-- ================================================================ -->
+<h2 id="overview">1. Overview</h2>
+
+<p>Large language models are excellent query and dashboard authors: given a
+schema and a feel for the data, they compose correct, idiomatic ClickHouse SQL
+and sensible visualizations. They are also <strong>untrusted</strong> with
+customer schema and data. A deployment that lets an LLM read
+<code>system.tables</code> or run free-form <code>SELECT</code>s against
+production has already disclosed every table name, column name, and — one
+query later — every value. The two properties conflict: the model needs to
+<em>see the shape of the data</em> to author well, and it must never see the
+data.</p>
+
+<p><strong>anond</strong> resolves the conflict with deterministic discovery
+plus HMAC tokenization plus a materialized, masked sandbox on a
+<em>separate sandbox cluster</em>. A trusted CLI job connects to the source
+cluster, profiles one database (schema, relations, workload mined from
+<code>system.query_log</code>), derives a stable token for every identifier
+via <code>HMAC-SHA256</code>, builds a per-column masking plan, and then
+materializes physical token-named tables — <code>tbl_&lt;hex&gt;</code> with
+<code>col_&lt;hex&gt;</code> columns — on the sandbox cluster, populated by
+masking <code>SELECT</code>s that run on the source and stream masked TSV
+across. The masking expressions, the HMAC key, the value seed, and the
+real-name map never leave the source side.</p>
+
+<p>The untrusted LLM gets exactly two surfaces, both on the sandbox cluster:
+the <strong>tokens-only profile</strong> (catalog, columns, relations,
+workload shapes — every identifier tokenized) and the <strong>masked
+sandbox</strong> itself, which it can query with ordinary SQL. Joins, GROUP
+BYs, distributions, and time series behave like the real ones because masking
+is deterministic and type-preserving — so the model can iterate on real-feeling
+queries without a single real identifier or value in its context.</p>
+
+<p>The artifacts the LLM composes — queries and dashboard specs written
+entirely over tokens — are handed to <strong>trusted instruments</strong>
+(Grafana, bentoclick, OpenAPI handlers). Because tokens occupy a lexically
+reserved namespace, de-tokenization is a word-level substitution against the
+source-side <code>identifier_map</code>; the instrument then runs the real SQL
+on the source cluster and routes real results to humans — never back to the
+LLM.</p>
+
+<!-- ================================================================ -->
+<h2 id="architecture">2. Overall architecture</h2>
+
+<figure>
+<svg viewBox="0 0 940 680" role="img" aria-label="anond overall architecture: source cluster, anond CLI, sandbox cluster, trusted instruments, untrusted LLM, with a dashed red trust boundary">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4b5563"/>
+    </marker>
+  </defs>
+
+  <!-- zones -->
+  <rect x="8" y="28" width="548" height="640" rx="10"
+        fill="#edf4fb" stroke="#c5d8ee"/>
+  <rect x="586" y="28" width="346" height="640" rx="10"
+        fill="#fdf4e4" stroke="#ecd9b0"/>
+  <text x="22" y="52" font-size="14" font-weight="700" fill="#2563a8">TRUSTED</text>
+  <text x="918" y="52" font-size="14" font-weight="700" fill="#b45309"
+        text-anchor="end">UNTRUSTED</text>
+
+  <!-- trust boundary -->
+  <line x1="571" y1="26" x2="571" y2="672" stroke="#cc2b2b"
+        stroke-width="2.5" stroke-dasharray="9 6"/>
+  <text x="571" y="16" font-size="12.5" font-weight="700" fill="#cc2b2b"
+        text-anchor="middle">TRUST BOUNDARY — only tokens &amp; masked values cross</text>
+
+  <!-- SOURCE cluster -->
+  <rect x="24" y="66" width="250" height="250" rx="8"
+        fill="#ffffff" stroke="#2563a8" stroke-width="2"/>
+  <text x="149" y="90" font-size="14" font-weight="700" fill="#2563a8"
+        text-anchor="middle">SOURCE cluster (otel)</text>
+
+  <rect x="38" y="102" width="222" height="52" rx="5"
+        fill="#f3f8fd" stroke="#7fa8d4"/>
+  <text x="149" y="123" font-size="12.5" font-weight="600"
+        text-anchor="middle">claude_otel — real DB</text>
+  <text x="149" y="139" font-size="11.5" fill="#5b6470"
+        text-anchor="middle">real tables · real data</text>
+
+  <rect x="38" y="162" width="222" height="32" rx="5"
+        fill="#f3f8fd" stroke="#7fa8d4"/>
+  <text x="149" y="182" font-size="12.5" text-anchor="middle"
+        font-weight="600">system.query_log</text>
+
+  <rect x="38" y="202" width="222" height="98" rx="5"
+        fill="#dce9f8" stroke="#2563a8"/>
+  <text x="149" y="221" font-size="12.5" font-weight="700"
+        text-anchor="middle">altinity — trusted meta DB</text>
+  <text x="149" y="239" font-size="12" text-anchor="middle">identifier_map</text>
+  <text x="149" y="255" font-size="12" text-anchor="middle">masking_plan</text>
+  <text x="149" y="273" font-size="11" fill="#5b6470"
+        text-anchor="middle">real names — never leave</text>
+  <text x="149" y="288" font-size="11" fill="#5b6470"
+        text-anchor="middle">this cluster</text>
+
+  <!-- anond CLI -->
+  <rect x="312" y="96" width="220" height="190" rx="8"
+        fill="#ffffff" stroke="#2563a8" stroke-width="2"/>
+  <text x="422" y="122" font-size="14" font-weight="700" fill="#2563a8"
+        text-anchor="middle">anond CLI</text>
+  <text x="422" y="139" font-size="11.5" fill="#5b6470"
+        text-anchor="middle">(trusted job)</text>
+  <text x="422" y="164" font-size="12" text-anchor="middle">discovery phases — SQL on source</text>
+  <text x="422" y="184" font-size="12" text-anchor="middle">HMAC tokenization + masking plan</text>
+  <text x="422" y="204" font-size="12" text-anchor="middle">masking SELECTs run on source</text>
+  <text x="422" y="224" font-size="12" text-anchor="middle">pipes masked TSV → sandbox</text>
+  <text x="422" y="248" font-size="11" fill="#5b6470"
+        text-anchor="middle">HMAC key + value seed held here;</text>
+  <text x="422" y="263" font-size="11" fill="#5b6470"
+        text-anchor="middle">all queries tagged log_comment='anond'</text>
+
+  <!-- anond and source arrows -->
+  <line x1="312" y1="148" x2="274" y2="148" stroke="#4b5563"
+        stroke-width="1.7" marker-end="url(#arr)"/>
+  <line x1="274" y1="196" x2="312" y2="196" stroke="#4b5563"
+        stroke-width="1.7" marker-end="url(#arr)"/>
+  <text x="293" y="172" font-size="10.5" fill="#5b6470"
+        text-anchor="middle">SQL</text>
+  <text x="293" y="212" font-size="10.5" fill="#5b6470"
+        text-anchor="middle">TSV</text>
+
+  <!-- anond -> sandbox arrow (crosses boundary) -->
+  <line x1="532" y1="176" x2="606" y2="176" stroke="#4b5563"
+        stroke-width="1.7" marker-end="url(#arr)"/>
+  <text x="569" y="148" font-size="11.5" fill="#374151"
+        text-anchor="middle">token DDL ·</text>
+  <text x="569" y="162" font-size="11.5" fill="#374151"
+        text-anchor="middle">masked TSV · profile</text>
+
+  <!-- SANDBOX cluster -->
+  <rect x="606" y="66" width="308" height="290" rx="8"
+        fill="#fffdf8" stroke="#b45309" stroke-width="2"/>
+  <text x="760" y="90" font-size="14" font-weight="700" fill="#b45309"
+        text-anchor="middle">SANDBOX cluster (demo)</text>
+
+  <rect x="620" y="102" width="280" height="92" rx="5"
+        fill="#fffaf0" stroke="#c8923a"/>
+  <text x="760" y="121" font-size="12.5" font-weight="700"
+        text-anchor="middle">claude_otel — sandbox DB</text>
+  <text x="760" y="137" font-size="11" fill="#5b6470"
+        text-anchor="middle">(operator-named, mirrors source name)</text>
+  <text x="760" y="156" font-size="12" font-family="ui-monospace, Menlo, Consolas, monospace"
+        text-anchor="middle">tbl_4f9c2a (col_8d1e07, …)</text>
+  <text x="760" y="176" font-size="11.5" fill="#5b6470"
+        text-anchor="middle">masked rows · MergeTree · bounded sample</text>
+
+  <rect x="620" y="204" width="280" height="136" rx="5"
+        fill="#fffaf0" stroke="#c8923a"/>
+  <text x="760" y="223" font-size="12.5" font-weight="700"
+        text-anchor="middle">altinity — tokens-only meta DB</text>
+  <text x="760" y="242" font-size="12" text-anchor="middle">profile_* (all identifiers tokenized)</text>
+  <text x="760" y="259" font-size="12" text-anchor="middle">generated_objects (cleanup registry)</text>
+  <text x="760" y="276" font-size="12" text-anchor="middle">manifest (written last)</text>
+  <text x="760" y="297" font-size="11" fill="#5b6470"
+        text-anchor="middle">no identifier_map · no masking_plan —</text>
+  <text x="760" y="312" font-size="11" fill="#5b6470"
+        text-anchor="middle">a grants misconfig here de-anonymizes nothing</text>
+
+  <!-- Untrusted LLM -->
+  <rect x="636" y="470" width="250" height="130" rx="8"
+        fill="#fffaf0" stroke="#b45309" stroke-width="2"/>
+  <text x="761" y="496" font-size="14" font-weight="700" fill="#b45309"
+        text-anchor="middle">Untrusted LLM</text>
+  <text x="761" y="516" font-size="12" text-anchor="middle">claude.ai / ChatGPT / any agent</text>
+  <text x="761" y="536" font-size="12" text-anchor="middle">reads profile + sandbox only</text>
+  <text x="761" y="556" font-size="12" text-anchor="middle">composes SQL &amp; dashboards</text>
+  <text x="761" y="574" font-size="12" text-anchor="middle">entirely over tokens</text>
+
+  <!-- LLM and sandbox arrows -->
+  <line x1="724" y1="470" x2="724" y2="356" stroke="#4b5563"
+        stroke-width="1.7" marker-end="url(#arr)"/>
+  <line x1="796" y1="356" x2="796" y2="470" stroke="#4b5563"
+        stroke-width="1.7" marker-end="url(#arr)"/>
+  <text x="716" y="416" font-size="11" fill="#374151"
+        text-anchor="end">SQL over tokens</text>
+  <text x="804" y="416" font-size="11" fill="#374151"
+        text-anchor="start">masked rows</text>
+
+  <!-- Trusted instruments -->
+  <rect x="40" y="470" width="280" height="150" rx="8"
+        fill="#ffffff" stroke="#2563a8" stroke-width="2"/>
+  <text x="180" y="496" font-size="14" font-weight="700" fill="#2563a8"
+        text-anchor="middle">Trusted instruments</text>
+  <text x="180" y="516" font-size="12" text-anchor="middle">Grafana · bentoclick · OpenAPI</text>
+  <text x="180" y="538" font-size="12" text-anchor="middle">de-tokenize via identifier_map</text>
+  <text x="180" y="558" font-size="12" text-anchor="middle">run real SQL on source cluster</text>
+  <text x="180" y="580" font-size="12" text-anchor="middle">real results → humans,</text>
+  <text x="180" y="598" font-size="12" text-anchor="middle">never back to the LLM</text>
+
+  <!-- LLM -> instruments arrow (crosses boundary) -->
+  <line x1="636" y1="540" x2="320" y2="540" stroke="#4b5563"
+        stroke-width="1.7" marker-end="url(#arr)"/>
+  <text x="478" y="528" font-size="11.5" fill="#374151"
+        text-anchor="middle">staged queries / dashboard specs — tokens only</text>
+
+  <!-- instruments -> source arrow -->
+  <line x1="166" y1="470" x2="166" y2="316" stroke="#4b5563"
+        stroke-width="1.7" marker-end="url(#arr)"/>
+  <text x="176" y="390" font-size="11" fill="#374151"
+        text-anchor="start">de-tokenize (identifier_map),</text>
+  <text x="176" y="405" font-size="11" fill="#374151"
+        text-anchor="start">run real SQL → real data</text>
+</svg>
+<figcaption>Overall architecture. anond runs as a trusted job: discovery and
+masking <code>SELECT</code>s execute on the source cluster; only token DDL,
+masked TSV, and tokens-only profile rows cross to the sandbox cluster. The LLM
+touches the sandbox cluster exclusively; its composed artifacts return to
+trusted instruments, which de-tokenize against the source-side map.</figcaption>
+</figure>
+
+<div class="legend">
+  <span><span class="chip chip-trusted"></span>trusted (real names, key, seed)</span>
+  <span><span class="chip chip-untrusted"></span>untrusted-readable (tokens &amp; masked values only)</span>
+  <span><span class="chip chip-boundary"></span>trust boundary</span>
+</div>
+
+<!-- ================================================================ -->
+<h2 id="trust-boundary">3. Trust boundary — what crosses, what never does</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:50%">Crosses the boundary (tokens / masked only)</th>
+      <th>Never crosses (source side / anond process only)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="crosses">Tokenized profile rows — <code>profile_*</code>
+        tables: catalog, columns, relations, workload shapes, conventions,
+        verification log; every identifier is a token</td>
+      <td class="never">HMAC key (<code>ANON_HMAC_KEY</code>) — derives every
+        identifier token</td>
+    </tr>
+    <tr>
+      <td class="crosses">Masked sandbox data — the TSV stream produced by
+        masking <code>SELECT</code>s on the source</td>
+      <td class="never">Value seed — keys <code>sipHash64(seed, v)</code>;
+        with it, hashed join keys are dictionary-attackable</td>
+    </tr>
+    <tr>
+      <td class="crosses">Token DDL — <code>CREATE TABLE tbl_&lt;hex&gt;
+        (col_&lt;hex&gt; …) ENGINE = MergeTree …</code>: token names, types,
+        engine, nothing else</td>
+      <td class="never"><code>identifier_map</code> — the token ↔ real-name
+        map (source meta DB only)</td>
+    </tr>
+    <tr>
+      <td class="crosses"><code>generated_objects</code> registry and the
+        <code>manifest</code> — token/operator-disclosed names, run stats,
+        residual notes</td>
+      <td class="never"><code>masking_plan</code> — per-column class and
+        transform, references real names</td>
+    </tr>
+    <tr>
+      <td class="crosses">Operator-disclosed sandbox DB name (e.g.
+        <code>claude_otel</code>) — only when the operator chooses
+        <code>--dest-db</code> equal to the source DB name</td>
+      <td class="never">Real query text — raw <code>system.query_log</code>
+        rows mined on the source; only normalized, tokenized shapes reach the
+        profile</td>
+    </tr>
+    <tr>
+      <td></td>
+      <td class="never">Masking expressions — the <code>INSERT … SELECT</code>
+        bodies containing seed + real names; they exist only in source-side
+        queries (and the source's query_log)</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ================================================================ -->
+<h2 id="pipeline">4. Run pipeline</h2>
+
+<figure>
+<svg viewBox="0 0 940 392" role="img" aria-label="anond run pipeline: fourteen phases from shape discovery to manifest, snaking across three rows">
+  <defs>
+    <marker id="parr" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4b5563"/>
+    </marker>
+  </defs>
+
+  <!-- row 1 : left to right -->
+  <rect x="20" y="24" width="164" height="66" rx="7"
+        fill="#eef5fc" stroke="#2563a8" stroke-width="1.6"/>
+  <text x="102" y="53" font-size="13" font-weight="600" text-anchor="middle">shape</text>
+  <text x="102" y="71" font-size="11" fill="#5b6470" text-anchor="middle">version · qlog span</text>
+
+  <rect x="204" y="24" width="164" height="66" rx="7"
+        fill="#eef5fc" stroke="#2563a8" stroke-width="1.6"/>
+  <text x="286" y="53" font-size="13" font-weight="600" text-anchor="middle">roster</text>
+  <text x="286" y="71" font-size="11" fill="#5b6470" text-anchor="middle">single --source-db</text>
+
+  <rect x="388" y="24" width="164" height="66" rx="7"
+        fill="#eef5fc" stroke="#2563a8" stroke-width="1.6"/>
+  <text x="470" y="53" font-size="13" font-weight="600" text-anchor="middle">columns</text>
+  <text x="470" y="71" font-size="11" fill="#5b6470" text-anchor="middle">types · keys · engines</text>
+
+  <rect x="572" y="24" width="164" height="66" rx="7"
+        fill="#eef5fc" stroke="#2563a8" stroke-width="1.6"/>
+  <text x="654" y="53" font-size="13" font-weight="600" text-anchor="middle">relations</text>
+  <text x="654" y="71" font-size="11" fill="#5b6470" text-anchor="middle">MV / dict / JOIN graph</text>
+
+  <rect x="756" y="24" width="164" height="66" rx="7"
+        fill="#eef5fc" stroke="#2563a8" stroke-width="1.6"/>
+  <text x="838" y="48" font-size="13" font-weight="600" text-anchor="middle">mining</text>
+  <text x="838" y="64" font-size="11" fill="#5b6470" text-anchor="middle">query_log; excludes own</text>
+  <text x="838" y="78" font-size="11" fill="#5b6470" text-anchor="middle">log_comment='anond'</text>
+
+  <line x1="184" y1="57" x2="204" y2="57" stroke="#4b5563" stroke-width="1.6" marker-end="url(#parr)"/>
+  <line x1="368" y1="57" x2="388" y2="57" stroke="#4b5563" stroke-width="1.6" marker-end="url(#parr)"/>
+  <line x1="552" y1="57" x2="572" y2="57" stroke="#4b5563" stroke-width="1.6" marker-end="url(#parr)"/>
+  <line x1="736" y1="57" x2="756" y2="57" stroke="#4b5563" stroke-width="1.6" marker-end="url(#parr)"/>
+
+  <!-- row 1 -> row 2 -->
+  <line x1="838" y1="90" x2="838" y2="148" stroke="#4b5563" stroke-width="1.6" marker-end="url(#parr)"/>
+
+  <!-- row 2 : right to left -->
+  <rect x="756" y="148" width="164" height="66" rx="7"
+        fill="#eef5fc" stroke="#2563a8" stroke-width="1.6"/>
+  <text x="838" y="177" font-size="13" font-weight="600" text-anchor="middle">archetype</text>
+  <text x="838" y="195" font-size="11" fill="#5b6470" text-anchor="middle">A–E decision rules</text>
+
+  <rect x="572" y="148" width="164" height="66" rx="7"
+        fill="#eef5fc" stroke="#2563a8" stroke-width="1.6"/>
+  <text x="654" y="177" font-size="13" font-weight="600" text-anchor="middle">demotion</text>
+  <text x="654" y="195" font-size="11" fill="#5b6470" text-anchor="middle">Pareto cut · review flags</text>
+
+  <rect x="388" y="148" width="164" height="66" rx="7"
+        fill="#eef5fc" stroke="#2563a8" stroke-width="1.6"/>
+  <text x="470" y="177" font-size="13" font-weight="600" text-anchor="middle">observe identifiers</text>
+  <text x="470" y="195" font-size="11" fill="#5b6470" text-anchor="middle">complete set before any rewrite</text>
+
+  <rect x="204" y="148" width="164" height="66" rx="7"
+        fill="#dce9f8" stroke="#2563a8" stroke-width="2"/>
+  <text x="286" y="172" font-size="13" font-weight="600" text-anchor="middle">build HMAC map</text>
+  <text x="286" y="188" font-size="11" fill="#5b6470" text-anchor="middle">reserved-namespace guard;</text>
+  <text x="286" y="202" font-size="11" fill="#5b6470" text-anchor="middle">map → SOURCE meta only</text>
+
+  <rect x="20" y="148" width="164" height="66" rx="7"
+        fill="#dce9f8" stroke="#2563a8" stroke-width="2"/>
+  <text x="102" y="177" font-size="13" font-weight="600" text-anchor="middle">masking plan</text>
+  <text x="102" y="195" font-size="11" fill="#5b6470" text-anchor="middle">per-column class → SOURCE</text>
+
+  <line x1="756" y1="181" x2="736" y2="181" stroke="#4b5563" stroke-width="1.6" marker-end="url(#parr)"/>
+  <line x1="572" y1="181" x2="552" y2="181" stroke="#4b5563" stroke-width="1.6" marker-end="url(#parr)"/>
+  <line x1="388" y1="181" x2="368" y2="181" stroke="#4b5563" stroke-width="1.6" marker-end="url(#parr)"/>
+  <line x1="204" y1="181" x2="184" y2="181" stroke="#4b5563" stroke-width="1.6" marker-end="url(#parr)"/>
+
+  <!-- row 2 -> row 3 -->
+  <line x1="102" y1="214" x2="102" y2="272" stroke="#4b5563" stroke-width="1.6" marker-end="url(#parr)"/>
+
+  <!-- row 3 : left to right -->
+  <rect x="20" y="272" width="164" height="66" rx="7"
+        fill="#fdf3e3" stroke="#b45309" stroke-width="1.6"/>
+  <text x="102" y="296" font-size="13" font-weight="600" text-anchor="middle">sandbox materialize</text>
+  <text x="102" y="312" font-size="11" fill="#5b6470" text-anchor="middle">mask on source, stream</text>
+  <text x="102" y="326" font-size="11" fill="#5b6470" text-anchor="middle">TSV → dest tables</text>
+
+  <rect x="204" y="272" width="164" height="66" rx="7"
+        fill="#fdf3e3" stroke="#b45309" stroke-width="1.6"/>
+  <text x="286" y="301" font-size="13" font-weight="600" text-anchor="middle">profile write</text>
+  <text x="286" y="319" font-size="11" fill="#5b6470" text-anchor="middle">tokens-only → DEST meta</text>
+
+  <rect x="388" y="272" width="164" height="66" rx="7"
+        fill="#fdf3e3" stroke="#b45309" stroke-width="1.6"/>
+  <text x="470" y="296" font-size="13" font-weight="600" text-anchor="middle">verify</text>
+  <text x="470" y="312" font-size="11" fill="#5b6470" text-anchor="middle">no-survivor scan · DDL leak</text>
+  <text x="470" y="326" font-size="11" fill="#5b6470" text-anchor="middle">scan · no trusted tables on dest</text>
+
+  <rect x="572" y="272" width="164" height="66" rx="7"
+        fill="#fdf3e3" stroke="#b45309" stroke-width="2.4"/>
+  <text x="654" y="296" font-size="13" font-weight="700" text-anchor="middle">manifest</text>
+  <text x="654" y="312" font-size="11" fill="#5b6470" text-anchor="middle">written LAST —</text>
+  <text x="654" y="326" font-size="11" fill="#5b6470" text-anchor="middle">presence = complete run</text>
+
+  <line x1="184" y1="305" x2="204" y2="305" stroke="#4b5563" stroke-width="1.6" marker-end="url(#parr)"/>
+  <line x1="368" y1="305" x2="388" y2="305" stroke="#4b5563" stroke-width="1.6" marker-end="url(#parr)"/>
+  <line x1="552" y1="305" x2="572" y2="305" stroke="#4b5563" stroke-width="1.6" marker-end="url(#parr)"/>
+
+  <!-- legend -->
+  <rect x="20" y="360" width="14" height="14" rx="3" fill="#eef5fc" stroke="#2563a8" stroke-width="1.4"/>
+  <text x="42" y="372" font-size="11.5" fill="#5b6470">reads on source cluster</text>
+  <rect x="210" y="360" width="14" height="14" rx="3" fill="#dce9f8" stroke="#2563a8" stroke-width="1.6"/>
+  <text x="232" y="372" font-size="11.5" fill="#5b6470">trusted writes (source meta DB)</text>
+  <rect x="460" y="360" width="14" height="14" rx="3" fill="#fdf3e3" stroke="#b45309" stroke-width="1.4"/>
+  <text x="482" y="372" font-size="11.5" fill="#5b6470">writes crossing to the sandbox cluster (tokens / masked only)</text>
+</svg>
+<figcaption>The run pipeline, snaking left→right, then right→left, then
+left→right. Discovery and mining read the source; the HMAC map and masking
+plan are written to the source meta DB; sandbox materialization, the
+tokens-only profile, verification, and the manifest land on the sandbox
+cluster. The manifest is the completion marker — consumers read only the
+latest complete run.</figcaption>
+</figure>
+
+<!-- ================================================================ -->
+<h2 id="masking">5. Masking classes (fail closed)</h2>
+
+<table>
+  <thead>
+    <tr><th>class</th><th>rule</th><th>transform</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>time</code></td>
+      <td><code>Date*</code> / <code>DateTime*</code></td>
+      <td>keep — time continuity is analytically load-bearing</td>
+    </tr>
+    <tr>
+      <td><code>measure</code></td>
+      <td>other numerics</td>
+      <td>keep (v1)</td>
+    </tr>
+    <tr>
+      <td><code>enum</code></td>
+      <td><code>Enum8</code> / <code>Enum16</code></td>
+      <td>keep — vocabulary-like by construction</td>
+    </tr>
+    <tr>
+      <td><code>joinkey</code></td>
+      <td>UUID / IP, id-named, or key columns</td>
+      <td>deterministic <code>sipHash64(seed, v)</code> — the same value masks
+        to the same value everywhere, so joins and GROUP BYs survive</td>
+    </tr>
+    <tr>
+      <td><code>label</code></td>
+      <td><code>LowCardinality(String)</code></td>
+      <td>short keyed-hash token per distinct value</td>
+    </tr>
+    <tr>
+      <td><code>freetext</code></td>
+      <td>other <code>String</code></td>
+      <td><code>'[redacted]'</code> — never kept, never scrambled-in-place</td>
+    </tr>
+    <tr>
+      <td><code>attrmap</code> <em>(new in v1.1)</em></td>
+      <td><code>Map(K, String)</code> with
+        K ∈ {<code>String</code>, <code>LowCardinality(String)</code>}
+        — e.g. OTel <code>ResourceAttributes</code> /
+        <code>LogAttributes</code></td>
+      <td>keys kept verbatim (semconv vocabulary; custom keys pass through —
+        residual noted in the manifest); values masked per-value: numeric,
+        boolean, and empty values kept, every other value replaced by a
+        12-hex keyed hash</td>
+    </tr>
+    <tr>
+      <td><code>schemaless</code></td>
+      <td><code>JSON</code> / <code>Dynamic</code> / other
+        string-bearing complex types</td>
+      <td><strong>EXCLUDED</strong> — fail closed; the column does not exist
+        in the sandbox</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The classification produced by discovery drives the plan; an unknown type
+never falls through to "keep" — it falls out of the sandbox entirely.</p>
+
+<!-- ================================================================ -->
+<h2 id="why-materialized">6. Why a materialized sandbox, not masking views</h2>
+
+<p>A masking <em>view</em> leaks its own secrets. Any role with
+<code>SELECT</code> on a view can read the view body via
+<code>SHOW CREATE VIEW</code> and
+<code>system.tables.create_table_query</code> — verified live on ClickHouse
+26.3. <code>SQL SECURITY DEFINER</code> only changes whose privileges the
+inner query runs with; the text stays readable. <code>REVOKE SHOW</code>
+cannot remove it, because SHOW is implicitly granted with any privilege. A
+view body containing <code>sipHash64(&lt;seed&gt;, real_col)</code> therefore
+hands the untrusted role both the value seed (making hashed join keys
+dictionary-attackable) and the real table and column names.</p>
+
+<p>A materialized table is leak-resistant <em>structurally</em>: its
+<code>SHOW CREATE</code> exposes only token-named columns, types, and the
+engine clause. The masking expressions — seed plus real names — exist only in
+the job's source-side <code>INSERT … SELECT</code>, never in any object the
+untrusted role can read. Two further wins come free: exploration load lands on
+the sandbox cluster instead of production (the source pays only the one-shot
+materialization scan), and masked values are physically stored, so they can be
+<code>ORDER BY</code> keys — primary indexes work on masked predicates, where
+a view would compute the hash per row and full-scan.</p>
+
+<!-- ================================================================ -->
+<h2 id="tokens">7. Token scheme</h2>
+
+<p>Every identifier token is <em>computed, never allocated</em>:</p>
+
+<p style="text-align:center; font-size:1.02rem">
+  <code>HMAC-SHA256(key, kind || 0x00 || original)</code> →
+  <code>kind_&lt;8 hex&gt;</code>
+  <span style="color:var(--muted)">&nbsp;(extended to 16 hex on collision;
+  the decision is recorded in the manifest)</span>
+</p>
+
+<ul>
+  <li><strong>Idempotent and multi-replica safe.</strong> Re-runs and
+    concurrent runs mint identical tokens with zero coordination; the
+    <code>identifier_map</code> table is a materialization for trusted
+    consumers to JOIN against, not an allocation ledger.</li>
+  <li><strong>Lexically reserved namespace.</strong> The shape
+    <code>db_</code>/<code>tbl_</code>/<code>col_</code>/… + hex is a valid
+    unquoted ClickHouse identifier that must never collide with a real one:
+    the run <em>aborts</em> if any real identifier matches the token pattern.
+    (anond tags its own queries with <code>log_comment='anond'</code> and
+    excludes them from mining precisely so its source-side masking SELECTs,
+    which contain <code>AS col_&lt;hex&gt;</code> aliases, don't trip this
+    guard on the next run.)</li>
+  <li><strong>The reverse path needs no parser.</strong> Because tokens are
+    reserved words, de-tokenizing LLM-composed SQL on the trusted side is a
+    word-boundary substitution against the map — no SQL parsing in the
+    security path.</li>
+  <li><strong>One operator-controlled exception.</strong> When
+    <code>--dest-db</code> equals the source DB name (mirror semantics, e.g.
+    <code>claude_otel</code> → <code>claude_otel</code>), the DB-level name is
+    operator-disclosed and kept verbatim so profile and sandbox agree. Tables
+    and columns inside are always token-named.</li>
+</ul>
+
+<!-- ================================================================ -->
+<h2 id="safety">8. Safety invariants</h2>
+
+<ul>
+  <li><strong>Never drop or replace a foreign object.</strong> Every name
+    anond creates is registered in <code>generated_objects</code>
+    <em>first</em>; if a name already exists and is not in the registry,
+    <code>ensureOurs</code> aborts the run. <code>cleanup</code> drops exactly
+    the registry list and nothing else — required since the sandbox DB name
+    can be operator-chosen and no longer matches a token pattern.</li>
+  <li><strong>Fail closed, everywhere.</strong> An unobserved identifier in a
+    profile write is an error, not a passthrough. An unparseable SQL value is
+    redacted whole (unbalanced quotes ⇒ <code>[redacted]</code>). An unknown
+    or schemaless column type is excluded from the sandbox. The failure
+    direction is always over-masking, never leaking.</li>
+  <li><strong>Manifest-last run protocol.</strong> Every phase writes rows
+    under a <code>run_id</code>; the manifest row is written last, so its
+    presence is the completion marker. Consumers read only the latest complete
+    run; a crashed run leaves no half-readable state.</li>
+  <li><strong>Trusted split by construction.</strong>
+    <code>identifier_map</code> and <code>masking_plan</code> exist only in
+    the source cluster's meta DB; verification asserts the sandbox cluster's
+    meta DB contains no trusted tables. A grants misconfiguration on the
+    LLM-exposed cluster can de-anonymize nothing.</li>
+</ul>
+
+<div class="callout">
+  <strong>One-line summary.</strong> The boundary is a cluster, the
+  enforcement is a GRANT, the tokens are pure functions of a key that never
+  crosses, and every failure mode masks more — not less.
+</div>
+
+</main>
+</body>
+</html>
