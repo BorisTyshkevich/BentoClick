@@ -68,7 +68,7 @@ func (r *Run) writeMaskingPlan(ctx context.Context) ([]*tablePlan, error) {
 		p := &tablePlan{T: t, DBTok: dbTok, TblTok: tblTok}
 		for _, c := range t.Columns {
 			class := classify.Classify(c)
-			expr, outType, include := classify.MaskExpr(c, class, seed)
+			expr, outType, include := classify.MaskExpr(c, class, seed, r.Cfg.KeepAttrKeys...)
 			colTok, err := r.tok("col", c.Name)
 			if err != nil {
 				return nil, err

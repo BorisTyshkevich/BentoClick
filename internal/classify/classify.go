@@ -160,7 +160,7 @@ func nullWrap(nullable bool, col, expr string) string {
 // MaskExpr returns the SELECT expression and the sandbox column type for one
 // column. include=false means the column is excluded (fail closed).
 // seed is the trusted-side value seed (never leaves the INSERT...SELECT).
-func MaskExpr(c Column, class Class, seed uint64) (expr, outType string, include bool) {
+func MaskExpr(c Column, class Class, seed uint64, keepAttrKeys ...string) (expr, outType string, include bool) {
 	q := quoteIdent(c.Name)
 	_, nullable, lowCard := unwrap(c.Type)
 	nn := q
@@ -200,12 +200,27 @@ func MaskExpr(c Column, class Class, seed uint64) (expr, outType string, include
 		// custom key names also pass through unmasked — that residual is
 		// accepted and documented at the call site. Values keep numerics,
 		// booleans and empties (analytically load-bearing, low identifying
-		// power); everything else becomes a 12-hex keyed-hash token.
+		// power); everything else becomes a 12-hex keyed-hash token — EXCEPT
+		// values under an operator-approved keepAttrKeys allowlist. Those are
+		// low-cardinality categorical VOCABULARY (e.g. event.name, model) that
+		// the LLM filters/groups on and the human must see de-anonymized; the
+		// list is an explicit allowlist (NOT cardinality-derived) so identifying
+		// keys like user.id / organization are never auto-exposed.
 		keyType, _ := attrMapKey(c.Type)
+		keepCond, lambda, keysArg := "", "v -> ", ""
+		if len(keepAttrKeys) > 0 {
+			quoted := make([]string, len(keepAttrKeys))
+			for i, k := range keepAttrKeys {
+				quoted[i] = "'" + strings.ReplaceAll(k, "'", `\'`) + "'"
+			}
+			keepCond = "k IN (" + strings.Join(quoted, ", ") + ") OR "
+			lambda = "(k, v) -> "
+			keysArg = "mapKeys(" + q + "), "
+		}
 		masked := fmt.Sprintf(
-			"if(match(v, '^-?[0-9.]+$') OR v IN ('true', 'false') OR v = '', v, substring(lower(hex(%s)), 1, 12))",
-			hash("v"))
-		return fmt.Sprintf("mapFromArrays(mapKeys(%s), arrayMap(v -> %s, mapValues(%s)))", q, masked, q),
+			"if(%smatch(v, '^-?[0-9.]+$') OR v IN ('true', 'false') OR v = '', v, substring(lower(hex(%s)), 1, 12))",
+			keepCond, hash("v"))
+		return fmt.Sprintf("mapFromArrays(mapKeys(%s), arrayMap(%s%s, %smapValues(%s)))", q, lambda, masked, keysArg, q),
 			fmt.Sprintf("Map(%s, String)", keyType), true
 	default: // ClassSchemaless
 		return "", "", false

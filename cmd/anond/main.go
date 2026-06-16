@@ -131,6 +131,7 @@ func cmdRun(args []string) error {
 	sample := fs.Uint64("sample-rows", 1_000_000, "max sandbox rows per table")
 	serviceUsers := fs.String("service-users", "", "comma-separated service users (demotion rule 2)")
 	keyFile := fs.String("hmac-key-file", "", "file containing the HMAC key")
+	keepAttrKeys := fs.String("keep-attr-keys", "", "comma-separated attrmap KEYS whose values are kept verbatim (low-card categorical vocabulary, e.g. event.name,model); identifying keys must NOT be listed")
 	dryRun := fs.Bool("dry-run", false, "discover + build map, no writes")
 	fs.Parse(args)
 
@@ -159,6 +160,13 @@ func cmdRun(args []string) error {
 	}
 	if *serviceUsers != "" {
 		cfg.ServiceUsers = strings.Split(*serviceUsers, ",")
+	}
+	if *keepAttrKeys != "" {
+		for _, k := range strings.Split(*keepAttrKeys, ",") {
+			if k = strings.TrimSpace(k); k != "" {
+				cfg.KeepAttrKeys = append(cfg.KeepAttrKeys, k)
+			}
+		}
 	}
 	r, err := discover.NewRun(cfg, chclient.NewFromString(srcCmd), chclient.NewFromString(dstCmd))
 	if err != nil {

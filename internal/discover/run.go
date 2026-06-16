@@ -44,6 +44,11 @@ type Config struct {
 	WindowDays   int
 	SampleRows   uint64
 	ServiceUsers []string
+	// KeepAttrKeys is an operator allowlist of attrmap KEYS whose String values
+	// are kept verbatim instead of hashed (low-card categorical vocabulary like
+	// event.name/model that the LLM filters on and the human must de-anonymize).
+	// Empty = mask all non-numeric attrmap values (original behavior).
+	KeepAttrKeys []string
 	HMACKey      []byte
 	DryRun       bool
 	Log          func(format string, args ...any)
