@@ -49,9 +49,15 @@ type Config struct {
 	// event.name/model that the LLM filters on and the human must de-anonymize).
 	// Empty = mask all non-numeric attrmap values (original behavior).
 	KeepAttrKeys []string
-	HMACKey      []byte
-	DryRun       bool
-	Log          func(format string, args ...any)
+	// AttrCardThreshold is the value-cardinality ceiling for an attrmap key to be
+	// auto-classified as vocabulary (value kept real). 0 → default (64).
+	AttrCardThreshold uint64
+	// PIIKeyPattern, if set, is an extra case-insensitive regex OR-ed with the
+	// built-in PII denylist to force more attrmap keys to identity (masked).
+	PIIKeyPattern string
+	HMACKey       []byte
+	DryRun        bool
+	Log           func(format string, args ...any)
 }
 
 type Run struct {
@@ -83,7 +89,59 @@ type Run struct {
 	// per-table sandbox row counts (filled by sandbox phase)
 	SandboxRows map[string]uint64
 
+	// AttrKeyRoles is the per-attrmap-key role classification (filled in
+	// writeMaskingPlan, emitted to profile_attr_keys in writeProfile).
+	AttrKeyRoles []AttrKeyInfo
+
 	started time.Time
+}
+
+// AttrKeyInfo is one attribute-map key's classification: real names + role +
+// the value-cardinality it was decided from, and whether its value is kept real.
+type AttrKeyInfo struct {
+	DB, Table, Column, Key string
+	Role                   string
+	Cardinality            uint64
+	Kept                   bool
+}
+
+// attrKeyRoles scans one attrmap column's keys on the SOURCE and classifies each
+// by (PII denylist, numeric fraction, value-cardinality). The scan is bounded to
+// a row sample so it stays cheap on large fact tables.
+func (r *Run) attrKeyRoles(ctx context.Context, db, table, col string, threshold uint64, denyRe *regexp.Regexp) ([]AttrKeyInfo, error) {
+	sqlNumeric := strings.ReplaceAll(classify.MeasureValueSQL, `\`, `\\`)
+	q := fmt.Sprintf(
+		"SELECT k, uniqExact(v) AS card, avg(toUInt8(match(v, '%s'))) AS numfrac "+
+			"FROM (SELECT mapKeys(%s) AS ks, mapValues(%s) AS vs FROM %s.%s LIMIT 200000) "+
+			"ARRAY JOIN ks AS k, vs AS v GROUP BY k",
+		sqlNumeric, qident(col), qident(col), qident(db), qident(table))
+	rows, err := r.SrcEx.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AttrKeyInfo, 0, len(rows.Data))
+	for _, row := range rows.Data {
+		if len(row) < 3 || row[0] == nil {
+			continue
+		}
+		var card uint64
+		if row[1] != nil {
+			card, _ = strconv.ParseUint(*row[1], 10, 64)
+		}
+		var nf float64
+		if row[2] != nil {
+			nf, _ = strconv.ParseFloat(*row[2], 64)
+		}
+		role := classify.ClassifyAttrKey(*row[0], card, nf, threshold, denyRe)
+		out = append(out, AttrKeyInfo{
+			DB: db, Table: table, Column: col, Key: *row[0],
+			Role: string(role), Cardinality: card,
+			// "kept" = the value is real in the sandbox: vocabulary is kept via
+			// keepKeys, measure via the numeric masking rule. identity/sensitive masked.
+			Kept: role == classify.RoleVocabulary || role == classify.RoleMeasure,
+		})
+	}
+	return out, nil
 }
 
 // NewRun wires a run over injected executors (testability: fakes go here).
@@ -443,6 +501,34 @@ func (r *Run) writeProfile(ctx context.Context) error {
 		[]string{"run_id", "db_token", "table_token", "col_token", "position",
 			"type_tok", "class", "in_pk", "in_sk", "in_part", "included"}, colRows); err != nil {
 		return err
+	}
+
+	// profile_attr_keys — per-attrmap-key roles (tokens for db/table/col; the
+	// attribute KEY itself is real, as it is in the sandbox tables).
+	var attrRows [][]*string
+	for _, a := range r.AttrKeyRoles {
+		dbTok, err := r.tok("db", a.DB)
+		if err != nil {
+			return err
+		}
+		tblTok, err := r.tok("tbl", a.Table)
+		if err != nil {
+			return err
+		}
+		colTok, err := r.tok("col", a.Column)
+		if err != nil {
+			return err
+		}
+		attrRows = append(attrRows, []*string{
+			s(r.RunID), s(dbTok), s(tblTok), s(colTok),
+			s(a.Key), s(a.Role), s(strconv.FormatUint(a.Cardinality, 10)), b8x(a.Kept),
+		})
+	}
+	if len(attrRows) > 0 {
+		if err := r.DstStore.Insert(ctx, "profile_attr_keys",
+			[]string{"run_id", "db_token", "table_token", "col_token", "attr_key", "role", "cardinality", "kept"}, attrRows); err != nil {
+			return err
+		}
 	}
 
 	// profile_relations

@@ -131,7 +131,9 @@ func cmdRun(args []string) error {
 	sample := fs.Uint64("sample-rows", 1_000_000, "max sandbox rows per table")
 	serviceUsers := fs.String("service-users", "", "comma-separated service users (demotion rule 2)")
 	keyFile := fs.String("hmac-key-file", "", "file containing the HMAC key")
-	keepAttrKeys := fs.String("keep-attr-keys", "", "comma-separated attrmap KEYS whose values are kept verbatim (low-card categorical vocabulary, e.g. event.name,model); identifying keys must NOT be listed")
+	keepAttrKeys := fs.String("keep-attr-keys", "", "comma-separated attrmap KEYS to force-keep verbatim (manual override on top of auto-classification)")
+	attrCardThreshold := fs.Uint64("attr-card-threshold", 64, "max distinct values for an attrmap key to auto-classify as vocabulary (value kept real)")
+	piiKeyPattern := fs.String("pii-key-pattern", "", "extra case-insensitive regex OR-ed with the built-in PII denylist (forces matching attrmap keys to identity/masked)")
 	dryRun := fs.Bool("dry-run", false, "discover + build map, no writes")
 	fs.Parse(args)
 
@@ -152,11 +154,13 @@ func cmdRun(args []string) error {
 		SourceDB:   *sourceDB,
 		DestDB:     *destDB,
 		MetaDB:     *cf.metaDB,
-		WindowDays: *window,
-		SampleRows: *sample,
-		HMACKey:    key,
-		DryRun:     *dryRun,
-		Log:        logf(time.Now()),
+		WindowDays:        *window,
+		SampleRows:        *sample,
+		AttrCardThreshold: *attrCardThreshold,
+		PIIKeyPattern:     *piiKeyPattern,
+		HMACKey:           key,
+		DryRun:            *dryRun,
+		Log:               logf(time.Now()),
 	}
 	if *serviceUsers != "" {
 		cfg.ServiceUsers = strings.Split(*serviceUsers, ",")

@@ -81,8 +81,26 @@ manifest.
 | joinkey | UUID/IP, id-named, or key columns | deterministic `sipHash64(seed, v)` — joins/GROUP BYs survive |
 | label | LowCardinality(String) | short keyed-hash token |
 | freetext | other String | `'[redacted]'` |
-| attrmap | `Map(String\|LowCardinality(String), String)` | keys kept verbatim (semconv-style vocabulary; custom key names pass through — residual noted); values: numerics/booleans/empties kept, else 12-hex keyed hash |
+| attrmap | `Map(String\|LowCardinality(String), String)` | keys kept verbatim; values masked **per-key role** (see below) — numerics/booleans/empties always kept, else 12-hex keyed hash |
 | schemaless | JSON/Dynamic/other complex-with-strings | **excluded** |
+
+### attrmap per-key roles
+
+Each Map key is auto-classified (a bounded source scan of its values) into a role
+that decides masking AND how the LLM should use it; the role is published to the
+profile (`profile_attr_keys`) and surfaced to the LLM (the dest `attr_guide` view /
+a `describe_attributes` tool):
+
+| role | rule | value | LLM use |
+|---|---|---|---|
+| identity | key matches the PII denylist (`--pii-key-pattern` extends it) — **checked first** | masked | GROUP BY only |
+| measure | values are numeric (≥90%) | kept | aggregate |
+| vocabulary | value-cardinality ≤ `--attr-card-threshold` (default 64) | **kept real** | filter & group |
+| sensitive | otherwise (high-card free text) | masked | avoid |
+
+PII denylist is checked **first** because a low-cardinality key can still be
+sensitive (e.g. `organization`). `--keep-attr-keys k1,k2` force-keeps specific keys
+on top of the auto-classification.
 
 Tokens are HMAC-SHA256 derived (`ANON_HMAC_KEY`), so re-runs and replicas
 mint identical tokens with zero coordination. The token shape is a reserved

@@ -17,6 +17,7 @@ package discover
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/Altinity/anon-discovery/internal/classify"
@@ -54,6 +55,18 @@ func sandboxEligible(t *Table) bool {
 // it (REAL names — trusted side), and returns the plans for materialization.
 func (r *Run) writeMaskingPlan(ctx context.Context) ([]*tablePlan, error) {
 	seed := r.Minter.ValueSeed()
+	threshold := r.Cfg.AttrCardThreshold
+	if threshold == 0 {
+		threshold = 64
+	}
+	pat := classify.DefaultPIIKeyPattern
+	if r.Cfg.PIIKeyPattern != "" {
+		pat = "(" + pat + ")|(" + r.Cfg.PIIKeyPattern + ")"
+	}
+	denyRe, derr := regexp.Compile(pat)
+	if derr != nil {
+		return nil, fmt.Errorf("compile PII key pattern: %w", derr)
+	}
 	var plans []*tablePlan
 	var rows [][]*string
 	for _, t := range r.Tables {
@@ -68,7 +81,27 @@ func (r *Run) writeMaskingPlan(ctx context.Context) ([]*tablePlan, error) {
 		p := &tablePlan{T: t, DBTok: dbTok, TblTok: tblTok}
 		for _, c := range t.Columns {
 			class := classify.Classify(c)
-			expr, outType, include := classify.MaskExpr(c, class, seed, r.Cfg.KeepAttrKeys...)
+			// Per attrmap column: classify each key (PII denylist + cardinality)
+			// and keep ONLY the vocabulary keys' values real. Manual KeepAttrKeys
+			// is a force-keep override (union). On query failure, fall back to the
+			// manual list (mask everything else).
+			keep := append([]string(nil), r.Cfg.KeepAttrKeys...)
+			if class == classify.ClassAttrMap {
+				infos, qerr := r.attrKeyRoles(ctx, t.Database, t.Name, c.Name, threshold, denyRe)
+				if qerr != nil {
+					r.Notes = append(r.Notes, fmt.Sprintf("attr-key roles failed for %s.%s.%s: %s (masking non-override values)", t.Database, t.Name, c.Name, firstLine(qerr.Error())))
+				} else {
+					r.AttrKeyRoles = append(r.AttrKeyRoles, infos...)
+					for _, info := range infos {
+						// keepKeys is the masking allowlist = vocabulary only.
+						// measure values are kept by the numeric rule in MaskExpr.
+						if info.Role == string(classify.RoleVocabulary) {
+							keep = append(keep, info.Key)
+						}
+					}
+				}
+			}
+			expr, outType, include := classify.MaskExpr(c, class, seed, keep...)
 			colTok, err := r.tok("col", c.Name)
 			if err != nil {
 				return nil, err

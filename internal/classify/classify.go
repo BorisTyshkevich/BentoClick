@@ -226,3 +226,61 @@ func MaskExpr(c Column, class Class, seed uint64, keepAttrKeys ...string) (expr,
 		return "", "", false
 	}
 }
+
+// AttrRole is the per-key semantic role of an attribute-map (Map) key. Unlike a
+// column Class it is decided from the KEY name + the distribution of its VALUES,
+// and it drives two things: how the value is masked, and how the LLM should use
+// the key (told via the profile / describe_attributes).
+type AttrRole string
+
+const (
+	// RoleVocabulary: low-cardinality categorical vocabulary (event.name, model).
+	// Value KEPT REAL — the LLM may filter AND group; the human sees real values.
+	RoleVocabulary AttrRole = "vocabulary"
+	// RoleIdentity: names a person/entity/secret (PII denylist). Value MASKED —
+	// the LLM may GROUP BY it (relabels to real for the human) but must NOT filter
+	// on a literal; prefer it over an opaque id for "by X" breakdowns.
+	RoleIdentity AttrRole = "identity"
+	// RoleMeasure: values are numeric. KEPT (by the numeric masking rule) — aggregate.
+	RoleMeasure AttrRole = "measure"
+	// RoleSensitive: high-cardinality non-numeric free text. Value MASKED — avoid.
+	RoleSensitive AttrRole = "sensitive"
+)
+
+// DefaultPIIKeyPattern matches attribute keys that name a person, entity, or
+// secret — forced to RoleIdentity (masked) regardless of cardinality, because a
+// LOW-cardinality key can still be sensitive (e.g. organization, user.email).
+// It deliberately targets only what cardinality would otherwise wrongly keep:
+//   - substrings for unambiguous PII words (email/account/organization/secret/…)
+//   - boundary-gated segments for the short ambiguous ones (user/id/ip/org)
+// It does NOT list 'token'/'auth'/'session': those over-match numeric measures
+// (output_tokens, cache_read_tokens) and vocabulary (auth_method); real secrets
+// are high-cardinality and fall to RoleSensitive (also masked) on their own.
+const DefaultPIIKeyPattern = `(?i)(email|account|organization|secret|passw|cookie|uuid|guid|hostname)|(^|[._-])(user|id|ip|org)([._-]|$)`
+
+// measureValueRe (strict): a pure number with at most one decimal point — so a
+// dotted version string like "10.0.26200" is NOT treated as a measure.
+var measureValueRe = regexp.MustCompile(`^-?[0-9]+(\.[0-9]+)?$`)
+
+// MeasureValueSQL is the same strict numeric test as a ClickHouse expression,
+// for computing the numeric fraction of a key's values in the discovery query.
+const MeasureValueSQL = `^-?[0-9]+(\.[0-9]+)?$`
+
+// ClassifyAttrKey assigns a role to one attribute key. denyRe (PII) is checked
+// FIRST (safety), then numeric→measure, then low-cardinality→vocabulary, else
+// sensitive. cardinality and numericFraction come from a source-side scan of the
+// key's values; threshold is the vocabulary cardinality ceiling.
+func ClassifyAttrKey(key string, cardinality uint64, numericFraction float64, threshold uint64, denyRe *regexp.Regexp) AttrRole {
+	if denyRe != nil && denyRe.MatchString(key) {
+		return RoleIdentity
+	}
+	if numericFraction >= 0.9 {
+		return RoleMeasure
+	}
+	if cardinality <= threshold {
+		return RoleVocabulary
+	}
+	return RoleSensitive
+}
+
+var _ = measureValueRe // reserved for in-process classification if ever needed

@@ -64,6 +64,10 @@ var ddl = map[string]string{
 		position UInt32, type_tok String, class String,
 		in_pk UInt8, in_sk UInt8, in_part UInt8, included UInt8
 	) ENGINE = ReplacingMergeTree ORDER BY (run_id, db_token, table_token, col_token)`,
+	"profile_attr_keys": `CREATE TABLE IF NOT EXISTS %[1]s.profile_attr_keys (
+		run_id String, db_token String, table_token String, col_token String,
+		attr_key String, role String, cardinality UInt64, kept UInt8
+	) ENGINE = ReplacingMergeTree ORDER BY (run_id, db_token, table_token, col_token, attr_key)`,
 	"profile_relations": `CREATE TABLE IF NOT EXISTS %[1]s.profile_relations (
 		run_id String, rel_kind String,
 		src_db_tok String, src_tbl_tok String,
@@ -99,7 +103,7 @@ var TrustedTables = []string{"identifier_map", "masking_plan"}
 // on the DEST (sandbox) cluster's meta DB, where the LLM-facing read path is.
 var ProfileTables = []string{
 	"manifest", "generated_objects",
-	"profile_shape", "profile_catalog", "profile_columns", "profile_relations",
+	"profile_shape", "profile_catalog", "profile_columns", "profile_attr_keys", "profile_relations",
 	"profile_workload", "profile_hot_columns", "profile_queries",
 	"profile_conventions", "profile_verification",
 }
