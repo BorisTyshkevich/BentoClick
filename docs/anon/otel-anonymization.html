@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>otel — Anonymized LLM dashboards over ClickHouse (current design)</title>
+<style>
+  :root{
+    --bg:#fbfbfa; --fg:#1c1d1f; --muted:#5c6066; --line:#e4e4e2;
+    --card:#ffffff; --accent:#2563c9; --anon:#7a3ea8; --real:#1c7c4a;
+    --code-bg:#f4f5f7; --warn-bg:#fff7e6; --warn-br:#e0b04a;
+    --ok-bg:#eef8f1; --ok-br:#7bbf97;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:920px;margin:0 auto;padding:48px 28px 96px}
+  header.hero{border-bottom:2px solid var(--fg);padding-bottom:20px;margin-bottom:8px}
+  h1{font-size:30px;line-height:1.25;margin:0 0 6px}
+  .sub{color:var(--muted);font-size:15px}
+  .pill{display:inline-block;font-size:12px;font-weight:600;letter-spacing:.02em;
+    padding:3px 9px;border-radius:999px;background:var(--ok-bg);color:var(--real);
+    border:1px solid var(--ok-br);vertical-align:middle}
+  h2{font-size:22px;margin:44px 0 10px;padding-top:12px;border-top:1px solid var(--line)}
+  h3{font-size:17px;margin:26px 0 8px}
+  p{margin:10px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13.5px;
+    background:var(--code-bg);padding:1px 5px;border-radius:4px}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+    padding:14px 16px;overflow:auto;font-size:13px;line-height:1.55}
+  pre code{background:none;padding:0}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14.5px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--code-bg);font-weight:600}
+  .anon{color:var(--anon);font-weight:600}
+  .real{color:var(--real);font-weight:600}
+  .note{border-left:4px solid var(--accent);background:#f3f7fe;padding:11px 15px;
+    border-radius:0 6px 6px 0;margin:16px 0}
+  .warn{border-left:4px solid var(--warn-br);background:var(--warn-bg);padding:11px 15px;
+    border-radius:0 6px 6px 0;margin:16px 0}
+  .ok{border-left:4px solid var(--ok-br);background:var(--ok-bg);padding:11px 15px;
+    border-radius:0 6px 6px 0;margin:16px 0}
+  ul,ol{margin:10px 0;padding-left:24px}
+  li{margin:5px 0}
+  .toc{background:var(--card);border:1px solid var(--line);border-radius:8px;
+    padding:16px 20px;margin:24px 0;columns:2;column-gap:36px;font-size:14px}
+  .toc a{color:var(--fg);text-decoration:none}
+  .toc a:hover{color:var(--accent);text-decoration:underline}
+  .diagram{width:100%;background:var(--card);border:1px solid var(--line);
+    border-radius:8px;padding:18px;margin:18px 0}
+  .legend{font-size:13px;color:var(--muted);margin-top:6px}
+  footer{margin-top:60px;padding-top:18px;border-top:1px solid var(--line);
+    color:var(--muted);font-size:13px}
+  .kbd{font-family:ui-monospace,monospace;font-size:12.5px;background:#eceef1;
+    border:1px solid #d6d9dd;border-bottom-width:2px;border-radius:4px;padding:1px 6px}
+  .small{font-size:13.5px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>Anonymized LLM dashboards over ClickHouse <span class="pill">LIVE · otel</span></h1>
+  <div class="sub">How an untrusted LLM explores a ClickHouse cluster and authors dashboards
+  over <strong>anonymized</strong> data, while humans see <strong>real</strong> data through the
+  same dashboard — enforced by ClickHouse RBAC, not by trusting the model.</div>
+</header>
+
+<nav class="toc">
+  <a href="#goal">1. The goal</a><br>
+  <a href="#arch">2. Architecture at a glance</a><br>
+  <a href="#sandbox">3. The anonymized sandbox</a><br>
+  <a href="#identity">4. One audience, one identity</a><br>
+  <a href="#roles">5. ClickHouse roles</a><br>
+  <a href="#action">6. The Auth0 Action (stable claim)</a><br>
+  <a href="#mcp">7. Per-request role activation (MCP)</a><br>
+  <a href="#why">8. Why this is correct &amp; safe</a><br>
+  <a href="#owner">9. Dashboard owner-stamping</a><br>
+  <a href="#deanon">10. De-anonymized human view (detok)</a><br>
+  <a href="#tools">11. MCP tools &amp; discovery</a><br>
+  <a href="#deploy">12. Deployment configuration</a><br>
+  <a href="#verify">13. Verification checklist</a><br>
+  <a href="#operate">14. Operating it</a>
+</nav>
+
+<h2 id="goal">1. The goal</h2>
+<p>An LLM agent (claude.ai, Claude Code, ChatGPT) should be able to browse a cluster's
+schema and write dashboard SQL <strong>without ever seeing real identifiers or real values</strong>.
+A human opening that same dashboard sees real data. The separation must hold even if the LLM
+is fully adversarial and the MCP server is the only thing standing between it and ClickHouse.</p>
+<p>Two artifacts make this work:</p>
+<ul>
+  <li><strong>anond</strong> — materializes a <em>masked sandbox database</em>
+    <code>claude_otel_anon</code> from the real <code>claude_otel</code>: table/column names become
+    HMAC tokens, values are masked. The LLM only ever queries this.</li>
+  <li><strong>bentoclick</strong> — the dashboard SPA. The LLM authors panel SQL against the
+    tokenized sandbox; a human opens the dashboard and the SPA runs the equivalent SQL
+    <em>as the human</em> against real <code>claude_otel</code>.</li>
+</ul>
+
+<h2 id="arch">2. Architecture at a glance</h2>
+<p>Two channels share <strong>one OAuth audience</strong>, <strong>one ClickHouse token directory</strong>,
+and <strong>one identical JWT claim</strong>. They differ only in which roles are <em>active</em> per request.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 860 330" width="100%" role="img" aria-label="Two-channel flow diagram">
+  <style>
+    .box{fill:#fff;stroke:#c9cdd3;stroke-width:1.5;rx:8}
+    .lbl{font:13px -apple-system,sans-serif;fill:#1c1d1f}
+    .lblb{font:600 13px -apple-system,sans-serif;fill:#1c1d1f}
+    .sm{font:11px ui-monospace,monospace;fill:#5c6066}
+    .anonf{fill:#7a3ea8} .realf{fill:#1c7c4a}
+    .arr{stroke:#9aa0a6;stroke-width:1.6;fill:none;marker-end:url(#ah)}
+    .arrA{stroke:#7a3ea8;stroke-width:1.8;fill:none;marker-end:url(#ahA)}
+    .arrR{stroke:#1c7c4a;stroke-width:1.8;fill:none;marker-end:url(#ahR)}
+  </style>
+  <defs>
+    <marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#9aa0a6"/></marker>
+    <marker id="ahA" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#7a3ea8"/></marker>
+    <marker id="ahR" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#1c7c4a"/></marker>
+  </defs>
+
+  <!-- LLM channel -->
+  <rect class="box" x="10" y="20" width="170" height="50" rx="8"/>
+  <text class="lblb anonf" x="20" y="40">LLM client</text>
+  <text class="sm" x="20" y="58">claude.ai · Code · ChatGPT</text>
+
+  <rect class="box" x="240" y="20" width="150" height="50" rx="8"/>
+  <text class="lblb" x="252" y="40">otel-mcp</text>
+  <text class="sm" x="252" y="58">role=^anon_ per req</text>
+
+  <!-- Human channel -->
+  <rect class="box" x="10" y="250" width="170" height="50" rx="8"/>
+  <text class="lblb realf" x="20" y="270">Human browser</text>
+  <text class="sm" x="20" y="288">bentoclick SPA</text>
+
+  <!-- Auth0 -->
+  <rect class="box" x="240" y="135" width="150" height="60" rx="8"/>
+  <text class="lblb" x="252" y="158">Auth0</text>
+  <text class="sm" x="252" y="174">stable full claim</text>
+  <text class="sm" x="252" y="188">+ real email</text>
+
+  <!-- ClickHouse -->
+  <rect class="box" x="600" y="110" width="240" height="120" rx="8"/>
+  <text class="lblb" x="616" y="134">ClickHouse (otel)</text>
+  <text class="sm" x="616" y="153">token_processor → token dir</text>
+  <rect x="616" y="163" width="208" height="24" rx="5" fill="#f3eef8" stroke="#cdb6e0"/>
+  <text class="sm anonf" x="624" y="179">claude_otel_anon (masked)</text>
+  <rect x="616" y="193" width="208" height="24" rx="5" fill="#eef6f0" stroke="#aacdb8"/>
+  <text class="sm realf" x="624" y="209">claude_otel (real)</text>
+
+  <!-- arrows -->
+  <path class="arrA" d="M180,45 L238,45"/>
+  <path class="arrA" d="M390,45 C500,45 520,150 598,160"/>
+  <text class="sm anonf" x="410" y="92">JWT (Bearer) → MCP activates anon only</text>
+
+  <path class="arrR" d="M180,275 C420,275 470,225 598,205"/>
+  <text class="sm realf" x="250" y="245">direct CH · full default grant → real data</text>
+
+  <path class="arr" d="M180,55 C150,120 150,135 238,150"/>
+  <path class="arr" d="M180,265 C150,230 175,200 238,180"/>
+  <text class="sm" x="60" y="150">login</text>
+</svg>
+<div class="legend"><span class="anon">Purple = anon / LLM path</span> &nbsp;·&nbsp;
+  <span class="real">Green = real / human path</span>. Both authenticate to the same Auth0 audience
+  and present the <em>same</em> JWT claim to the same CH token directory.</div>
+</div>
+
+<h2 id="sandbox">3. The anonymized sandbox</h2>
+<p><strong>anond</strong> materializes <code>claude_otel_anon</code> from <code>claude_otel</code>:</p>
+<ul>
+  <li><strong>Names are tokenized</strong> — table and column names become HMAC tokens
+    (e.g. <code>tbl_&lt;hex&gt;</code>), so the schema itself leaks no business meaning.</li>
+  <li><strong>Values are masked</strong> — the LLM sees shape and cardinality, not real identifiers.</li>
+  <li><strong>The trusted token↔real map</strong> lives in a separate meta database (<code>altinity</code>),
+    readable by the de-tokenization path but never by the LLM.</li>
+  <li>Alongside the masked tables, anond publishes <strong>profile tables</strong>
+    (<code>altinity.profile_*</code>: catalog, columns, relations, shape, workload…) that give the LLM
+    enough statistical context to author useful dashboards.</li>
+</ul>
+<p>The LLM's default database <em>is</em> <code>claude_otel_anon</code>, and its active roles grant
+<code>SELECT</code> only there (plus the profile tables) — so even the schema it explores is the masked one.</p>
+
+<h2 id="identity">4. One audience, one identity</h2>
+<p>Everything keys to a single audience: <code>https://otel-mcp.demo.altinity.cloud/</code></p>
+<ul>
+  <li>MCP <code>audience</code> + <code>public_resource_url</code> (it is a pure OAuth resource server, <code>broker:false</code>).</li>
+  <li>ClickHouse <code>token_processor</code> <code>expected_audience</code>.</li>
+  <li>The bentoclick SPA requests this same audience (it talks to CH directly, but its JWT must
+    validate against the same processor).</li>
+</ul>
+<div class="warn"><strong>Pick the audience your MCP connector is already registered for.</strong>
+claude.ai is CIMD-registered against the MCP host. Pointing the audience at the CH host instead makes
+claude.ai see a new RFC 8707 resource and attempt a fresh registration that fails
+(<code>mcp_registration_failed</code>). Keep it at the MCP host value.</div>
+<p>ClickHouse 26.x allows <strong>one</strong> <code>&lt;token&gt;</code> directory and <strong>one</strong>
+<code>expected_audience</code> per processor — so a single audience serves both channels. The
+channel split is done entirely by <em>which roles are activated per request</em> (§7), not by audience
+and not by user identity.</p>
+
+<h2 id="roles">5. ClickHouse roles</h2>
+<p>Four roles, granted to every demo-org member identically. The LLM channel activates only the
+<span class="anon">anon</span> pair; the human channel uses all four (its default grant).</p>
+<table>
+  <tr><th>Role</th><th>Grants</th><th>Channel</th></tr>
+  <tr><td class="real">oauth_otel_role</td><td><code>SELECT</code> on <code>claude_otel.*</code>, <code>system.*</code>; <code>SHOW DATABASES</code></td><td>human — read real</td></tr>
+  <tr><td class="real">bentoclick_viewer_role</td><td><code>SELECT</code> on <code>bentoclick.dashboards</code>, <code>dashboards_prefix</code></td><td>human — read dashboards</td></tr>
+  <tr><td class="anon">anon_mcp_reader</td><td><code>SELECT</code> on <code>claude_otel_anon.*</code>, <code>altinity.profile_*</code></td><td>LLM — read anon</td></tr>
+  <tr><td class="anon">anon_author_role</td><td><code>INSERT</code> on <code>bentoclick.dashboards_raw</code>; <code>SHOW TABLES</code> on <code>bentoclick.*</code></td><td>LLM — author dashboards</td></tr>
+</table>
+<p class="small">Real roles deliberately contain no <code>anon</code> substring, so the
+<code>^anon_</code> activation filter (§7) selects exactly the two anon roles and nothing else.</p>
+
+<h3>The token directory</h3>
+<p>ClickHouse provisions each user from a valid JWT (<code>storage = token</code>, no static user to
+shadow it) and assigns the claim's roles filtered by a safety regex. A static
+<code>IDENTIFIED WITH jwt</code> user would ignore the groups claim and keep its own grants — which is
+why the identity is left to the directory:</p>
+<pre><code>&lt;token&gt;
+  &lt;processor&gt;auth0_otel&lt;/processor&gt;
+  &lt;roles_filter&gt;^(oauth_otel_role|bentoclick_viewer_role|anon_author_role|anon_mcp_reader)$&lt;/roles_filter&gt;
+&lt;/token&gt;</code></pre>
+<p>Provisioned users get <code>default_roles_all = 1</code> — their default (the human direct-CH path) is
+the full grant. The LLM never relies on defaults; the MCP narrows it per request.</p>
+
+<h2 id="action">6. The Auth0 Action — one stable claim for every channel</h2>
+<p>The post-login Action <code>otel-bentoclick-claims</code> (gated to the otel audience) mints the
+<strong>same</strong> claim regardless of client. It does <em>not</em> branch on client type and does
+<em>not</em> rewrite the username — both channels carry the real email and the full role set:</p>
+<pre><code>exports.onExecutePostLogin = async (event, api) =&gt; {
+  const AUD = "https://otel-mcp.demo.altinity.cloud/";
+  const aud = event.transaction?.requested_authorization_details?.[0]?.aud
+           || event.transaction?.requested_resource_indicators?.[0]
+           || event.resource_server?.identifier;
+  if (aud !== AUD) return;                      // gate: otel audience only
+
+  const NS = "https://mcp.altinity.cloud/", email = event.user?.email || "";
+  if (email) {
+    api.accessToken.setCustomClaim(NS + "email", email);                       // → currentUser()
+    api.accessToken.setCustomClaim(NS + "email_verified", event.user.email_verified === true);
+    if (event.user.name) api.accessToken.setCustomClaim(NS + "name", event.user.name);
+  }
+  // IDENTICAL on every channel. MCP activates only ^anon_ via role=;
+  // bentoclick (direct CH) uses the full default grant.
+  api.accessToken.setCustomClaim("https://clickhouse/roles",
+    ["oauth_otel_role", "bentoclick_viewer_role", "anon_author_role", "anon_mcp_reader"]);
+};</code></pre>
+<div class="note"><code>username_claim</code> in CH is <code>https://mcp.altinity.cloud/email</code>, so the
+provisioned CH username is the real email on both channels. That is what makes
+<code>currentUser()</code> the real email — and dashboard owner-stamping (§9) free.</div>
+
+<h2 id="mcp">7. Per-request role activation in the MCP</h2>
+<p>The MCP is the only thing that makes the LLM channel anon. On every ClickHouse request it reads the
+role claim, filters it, and activates <em>only the matching subset</em> via repeated HTTP
+<code>role=</code> parameters — narrowing the user's (full) grant down to anon. Configuration:</p>
+<pre><code>server:
+  oauth:
+    role_claim:  https://clickhouse/roles   # JWT claim holding the role array
+    role_filter: "^anon_"                    # activate only roles matching this regex</code></pre>
+<ul>
+  <li><strong>Narrows, never grants.</strong> <code>role=</code> can only restrict to roles the user
+    already holds; it cannot escalate.</li>
+  <li><strong>Fail-closed.</strong> If the filtered set is empty, the request is <em>denied</em> — it
+    never falls back to the full default grant. <code>role_filter</code> is required whenever
+    <code>role_claim</code> is set (validated at startup).</li>
+  <li><strong>HTTP-only.</strong> Role activation rides the HTTP <code>role=</code> query parameter, so
+    the MCP CH protocol must be <code>http</code>.</li>
+  <li>Works regardless of broker mode and independently of the auth wire format (it is applied
+    post-authentication).</li>
+</ul>
+<p class="small">Implemented in altinity-mcp as <code>oauth.role_claim</code> / <code>oauth.role_filter</code>
+(PR&nbsp;#141). The bentoclick human path does not go through the MCP, so it keeps the full default grant
+and sees real data.</p>
+
+<h2 id="why">8. Why this is correct &amp; safe</h2>
+<h3>No role-thrash race</h3>
+<p>The CH token directory rewrites a user's granted roles on each login only if the claim differs from
+what's stored. Because the Action emits the <strong>identical full claim on every channel</strong>, the
+stored entity never changes after first login — it is immutable in steady state. Concurrent claude.ai
+and bentoclick logins cannot perturb each other's grants. The per-channel difference lives on the
+<em>request</em> (<code>role=</code>), not on the shared user entity.</p>
+<h3>The LLM cannot escalate to real roles</h3>
+<p>Even though the LLM's identity is <em>granted</em> the real roles, it is held to anon because:</p>
+<ul>
+  <li>The MCP pins <code>role=^anon_</code> on every request and <strong>fails closed</strong> on an empty set.</li>
+  <li>ClickHouse HTTP is <strong>single-statement</strong> and the MCP holds <strong>no session</strong>,
+    so the LLM cannot issue <code>SET ROLE oauth_otel_role; SELECT …</code>.</li>
+  <li>The query tool is <strong>read-only</strong> (a second backstop).</li>
+</ul>
+<div class="warn"><strong>Accepted trade-off.</strong> "The LLM never sees real data" is
+<em>MCP-enforced</em>, not pure CH RBAC — the LLM's identity is granted the real roles and is anon only
+because the MCP activates the anon subset. The mitigations above (fail-closed activation,
+single-statement HTTP, no session, read-only tool) are what make this safe. The upside is that
+<code>currentUser()</code> is the real email everywhere, which makes owner-stamping free.</div>
+
+<h2 id="owner">9. Dashboard owner-stamping</h2>
+<p>The dashboard pipeline is: <code>bentoclick.dashboards_raw</code> (<code>Null</code> engine) →
+<code>dashboards_mv</code> (<code>SQL SECURITY DEFINER</code>, stamps <code>currentUser() AS owner</code>) →
+<code>bentoclick.dashboards</code>. Because <code>currentUser()</code> is the real email on every channel,
+an LLM-saved dashboard is stamped with the human's email and appears under
+<code>/b/v/&lt;email&gt;/&lt;slug&gt;</code> — no MCP injection, no <code>owner</code> column, no MV change.</p>
+<div class="warn"><strong>Required setting: <code>async_insert=0</code> on the save path.</strong>
+The otel cluster defaults to <code>async_insert=1</code>. With async insert, the INSERT is buffered and
+flushed by a background thread whose context has an empty <code>ClientInfo</code> — so
+<code>currentUser()</code> (and any <code>DEFAULT</code>/<code>MATERIALIZED</code>/<code>ALIAS</code>
+expression, and <code>currentUser()</code> inside the DEFINER MV) evaluates to an <strong>empty string</strong>,
+silently blanking the owner. The fix is to force synchronous insert on the MCP's CH connection — the
+MCP's only writes are tiny dashboard saves, which never need async batching:</p>
+<pre><code>config:
+  clickhouse:
+    extra_settings:
+      async_insert: "0"</code></pre>
+This was root-caused to <code>AsynchronousInsertQueue::processData</code> building the flush context from
+the global context and restoring only the access identity (never the ClientInfo user fields). Reported
+upstream as <a href="https://github.com/ClickHouse/ClickHouse/issues/107530">ClickHouse&nbsp;#107530</a>.</div>
+
+<h2 id="deanon">10. De-anonymized human view (detok)</h2>
+<p>The LLM authors panel SQL over the <em>masked sandbox</em> (<code>claude_otel_anon.tbl_…</code>,
+<code>col_…</code>). For the human to see real data, that SQL is <strong>de-tokenized at the
+dashboard read path</strong>: the <code>dashboards_mv</code> (DEFINER) wraps the stored panel SQL with
+the <code>detok()</code> UDF, so <code>bentoclick.dashboards</code> holds real-name SQL that the
+<code>/b/</code> SPA runs against real <code>claude_otel</code>.</p>
+<pre><code>detok() rewrites, via the altinity.token_to_real dictionary:
+  col_530b0876            → Timestamp
+  col_5ab2d3a7            → LogAttributes
+  claude_otel_anon.tbl_5f5c0ed2 → claude_otel.otel_logs</code></pre>
+<p class="small">The DEFINER (<code>bentoclick_definer</code>) needs
+<code>GRANT dictGet ON altinity.token_to_real</code>. The LLM keeps seeing tokens (it has no read on
+<code>bentoclick.dashboards</code>); only the human read path is de-tokenized.</p>
+
+<div class="warn"><strong>The load-bearing rule: <code>detok()</code> de-anonymizes NAMES, not VALUES.</strong>
+Two consequences shape what the LLM may write:</div>
+<ul>
+  <li><strong>GROUP BY de-anonymizes for free; FILTER does not.</strong> Because attrmap <em>keys</em> are
+    always real and the human re-runs against real data, <code>GROUP BY</code> on any key relabels masked
+    values to real automatically. But a <code>WHERE k = 'literal'</code> filtering on a <em>masked</em>
+    value matches nothing in real data. So only values the LLM <strong>filters on</strong> must be real
+    in the sandbox.</li>
+  <li><strong>Per-key roles decide masking AND guidance.</strong> anond auto-classifies every
+    attribute KEY into a role (PII denylist first, then value cardinality / numeric-fraction):
+    <em>vocabulary</em> (low-card categorical, e.g. <code>event.name</code>, <code>model</code>) → value
+    <strong>kept real</strong> (filter &amp; group); <em>measure</em> (numeric, e.g. <code>*_tokens</code>,
+    <code>cost_usd</code>) → kept (aggregate); <em>identity</em> (<code>user.email</code>,
+    <code>organization</code>, <code>*.id</code>) → <strong>masked</strong>, GROUP BY only; <em>sensitive</em>
+    (high-card free text) → masked. A "by user" panel must <code>GROUP BY LogAttributes['user.email']</code>
+    (relabels to real emails for the human) — never <code>user.id</code>, a <strong>source-side SHA256</strong>
+    (not our masking, not reversible). The role of each key is published to the LLM via
+    <code>describe_attributes</code>.</li>
+</ul>
+<p class="small">Classification: PII denylist (catches low-card-but-sensitive keys like
+<code>organization</code>) overrides cardinality; a manual <code>--keep-attr-keys</code> override still
+exists. Tunables: <code>--attr-card-threshold</code> (default 64), <code>--pii-key-pattern</code>.</p>
+
+<h2 id="tools">11. MCP tools &amp; discovery</h2>
+<p>The otel MCP exposes exactly what the bentoclick authoring loop needs — read, discover, save. The
+discovery tools are <strong>cluster-sourced</strong> (a commented view in the cluster becomes the tool;
+no domain knowledge in MCP config):</p>
+<table>
+  <tr><th>Tool</th><th>Backing</th><th>Purpose</th></tr>
+  <tr><td><code>execute_query</code></td><td>static (read-only)</td><td>run SELECTs against the sandbox</td></tr>
+  <tr><td><code>describe_schema</code></td><td>view <code>altinity.schema_guide</code></td><td>tokenized schema map: table role + per-column class + usage hint (the COMMENT teaches the class contract)</td></tr>
+  <tr><td><code>describe_attributes</code></td><td>view <code>altinity.attr_guide</code></td><td>per Map-key role (vocabulary/identity/measure/sensitive) + usage — so the LLM filters vocabulary, GROUP BYs identity, aggregates measures, avoids sensitive</td></tr>
+  <tr><td><code>get_dashboards_prefix</code></td><td>view <code>bentoclick.dashboards_prefix</code></td><td>the correct share-URL prefix <code>…/b/v/&lt;email&gt;/</code> — the LLM must call this, never guess <code>/v/</code></td></tr>
+  <tr><td><code>save_dashboard</code></td><td>insert → <code>bentoclick.dashboards_raw</code></td><td>save a dashboard (→ detok MV → <code>dashboards</code>)</td></tr>
+</table>
+<p class="small">There is <strong>no</strong> generic <code>write_query</code> tool — the only write is the
+dashboard save. Tool names match the <code>bentoclick-dashboard</code> skill. Discovery runs per request
+as the LLM's role, so each backing view must be SELECT-able by <code>anon_*</code>
+(e.g. <code>GRANT SELECT ON bentoclick.dashboards_prefix TO anon_author_role</code>).</p>
+
+<h2 id="deploy">12. Deployment configuration</h2>
+<h3>MCP — <code>deploy/otel/mcp-values.yaml</code> (key fields)</h3>
+<pre><code>config:
+  clickhouse:
+    host: clickhouse-{cluster}.demo.svc.cluster.local
+    port: 8123
+    protocol: http                 # required: role= activation is HTTP-only
+    database: claude_otel_anon      # LLM's default DB is the masked sandbox
+    extra_settings:
+      async_insert: "0"             # synchronous saves → owner-stamping works (§9)
+  server:
+    oauth:
+      enabled: true
+      broker: false                 # pure OAuth resource server
+      issuer:   https://altinity.auth0.com/
+      audience: https://otel-mcp.demo.altinity.cloud/
+      public_resource_url: https://otel-mcp.demo.altinity.cloud/
+      role_claim:  https://clickhouse/roles
+      role_filter: "^anon_"
+    tools:                                  # read + discover + save; NO generic write
+      - { name: execute_query,        type: read }
+      - { name: describe_schema,      type: read,  view_regexp: ^altinity\.schema_guide$ }
+      - { name: describe_attributes,  type: read,  view_regexp: ^altinity\.attr_guide$ }
+      - { name: get_dashboards_prefix, type: read, view_regexp: ^bentoclick\.dashboards_prefix$ }
+      - { name: save_dashboard, type: write, mode: insert, table_regexp: ^bentoclick\.dashboards_raw$ }</code></pre>
+
+<h3>ClickHouse — native token auth (Antalya 26.3, no sidecar)</h3>
+<pre><code>&lt;token_processors&gt;
+  &lt;auth0_otel&gt;
+    &lt;type&gt;openid&lt;/type&gt;
+    &lt;configuration_endpoint&gt;https://altinity.auth0.com/.well-known/openid-configuration&lt;/configuration_endpoint&gt;
+    &lt;expected_audience&gt;https://otel-mcp.demo.altinity.cloud/&lt;/expected_audience&gt;
+    &lt;username_claim&gt;https://mcp.altinity.cloud/email&lt;/username_claim&gt;
+    &lt;groups_claim&gt;https://clickhouse/roles&lt;/groups_claim&gt;
+    &lt;token_cache_lifetime&gt;60&lt;/token_cache_lifetime&gt;
+  &lt;/auth0_otel&gt;
+&lt;/token_processors&gt;</code></pre>
+
+<h3>Deploy</h3>
+<pre><code>helm upgrade otel-mcp /path/to/altinity-mcp/helm/altinity-mcp \
+  -f deploy/otel/mcp-values.yaml -n demo
+kubectl rollout restart deploy/otel-mcp-altinity-mcp -n demo   # also clears per-pod auth cache
+kubectl rollout status  deploy/otel-mcp-altinity-mcp -n demo</code></pre>
+<p class="small">The claude.ai connector points at the multicluster route
+<code>https://otel-mcp.demo.altinity.cloud/mcp/otel</code>.</p>
+
+<h2 id="verify">13. Verification checklist</h2>
+<ol>
+  <li><strong>Identity:</strong> LLM <code>SELECT currentUser()</code> → the <span class="real">real email</span>.</li>
+  <li><strong>Active roles:</strong> LLM <code>SELECT currentRoles()</code> → <code>['anon_author_role','anon_mcp_reader']</code> only.</li>
+  <li><strong>Anon read:</strong> LLM reads tokenized tables in <code>claude_otel_anon</code> ✓.</li>
+  <li><strong>No real data:</strong> LLM <code>SELECT … FROM claude_otel.otel_logs</code> → <code>ACCESS_DENIED</code> (497).</li>
+  <li><strong>Owner-stamping:</strong> LLM saves a dashboard → <code>bentoclick.dashboards.owner = &lt;real email&gt;</code>.</li>
+  <li><strong>Human real (detok):</strong> the saved dashboard's stored panels reference
+    <code>claude_otel.otel_logs</code> / <code>LogAttributes</code> (no tokens); <code>/b/v/&lt;email&gt;/&lt;slug&gt;</code>
+    renders real numbers, and "by user" shows real emails (<code>GROUP BY user.email</code>).</li>
+  <li><strong>Share URL:</strong> <code>get_dashboards_prefix</code> → <code>…/b/v/&lt;encoded-email&gt;/</code> (not <code>/v/</code>).</li>
+  <li><strong>Fail-closed:</strong> an empty filtered role set → MCP returns access-denied (it never falls through to the full grant).</li>
+</ol>
+
+<h2 id="operate">14. Operating it</h2>
+<p><strong>Add a human:</strong> Auth0 → Organizations → <code>demo</code> → add member → assign
+<code>oauth_otel_role</code> + <code>bentoclick_viewer_role</code> (org membership is the hard allowlist;
+the token directory provisions them on first login).</p>
+<p><strong>Add an MCP client:</strong> just connect it to
+<code>https://otel-mcp.demo.altinity.cloud/mcp/otel</code>. It registers via CIMD and is anon
+automatically — nothing per-client to configure.</p>
+
+<footer>
+  Current design (anonymized-LLM dashboards on otel). Source of truth for live values:
+  <code>acm/mcp/deploy/otel/mcp-values.yaml</code>, the Auth0 Action
+  <code>auth0-actions/otel-bentoclick-claims.js</code>, and the CH token-processor / user-directory
+  ACM settings. Owner-stamping depends on <code>async_insert=0</code>
+  (<a href="https://github.com/ClickHouse/ClickHouse/issues/107530">ClickHouse&nbsp;#107530</a>).
+</footer>
+
+</div>
+</body>
+</html>

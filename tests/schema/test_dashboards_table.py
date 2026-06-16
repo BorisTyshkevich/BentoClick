@@ -207,7 +207,7 @@ def test_dashboards_prefix_view_returns_expected_fields(ch):
     # Test runs as the `default` user; no `@` to encode.
     assert owner == "default"
     assert spa_origin.startswith("http"), f"spa_origin: {spa_origin}"
-    assert prefix == f"{spa_origin}/v/{owner}/"
+    assert prefix == f"{spa_origin}/b/{owner}/"
 
 
 def test_dashboards_prefix_encodes_at_sign(ch):

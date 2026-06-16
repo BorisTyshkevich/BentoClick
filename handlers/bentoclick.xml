@@ -24,8 +24,8 @@
   altinity/clickhouse-server:26.1.11.20001.altinityantalya.
 
   Routes:
-    GET /app                          → SPA shell
-    GET /v/<owner>/<slug>             → SPA shell (route handled client-side)
+    GET /                             → SPA shell (index)
+    GET /<owner>/<slug>               → SPA shell (dashboard; route handled client-side)
     GET /lib/v1/spa.js                → SPA bootstrap JS (ES module)
     GET /lib/v1/spa-helpers.js        → pure helpers imported by spa.js
     GET /lib/v1/dash.js               → shared dashboard runtime (window.DASH.*)
@@ -38,35 +38,6 @@
 -->
 <clickhouse>
     <http_handlers>
-        <!-- SPA shell. Route parsing happens in spa.js. -->
-        <rule name="bentoclick-spa-shell">
-            <url><![CDATA[regex:^(/b/app|/b/v/[^/]+/[^/]+)/?(\?.*)?$]]></url>
-            <methods>GET</methods>
-            <handler>
-                <type>static</type>
-                <content_type>text/html; charset=UTF-8</content_type>
-                <http_response_headers>
-                    <!-- connect-src is intentionally narrow: the shell calls
-                         same-origin (config.json, CH) and the MCP for OAuth
-                         discovery. The dashboard iframe (srcdoc, sandboxed,
-                         null origin) inherits this CSP — `'self'` evaluates
-                         to nothing inside the iframe, so a malicious
-                         dashboard can't browser-side-exfil via fetch() to an
-                         arbitrary HTTPS endpoint. CH_FETCH still works
-                         because it's postMessage, not a network connect.
-                         At install time ${MCP_ORIGIN} is substituted by
-                         install.sh (sed over each handlers/*.xml) to the
-                         deployment's MCP scheme+host (e.g. https://mcp.example.com).
-                         If you see the literal `${MCP_ORIGIN}` token in the
-                         deployed CSP, the substitution was skipped — re-run
-                         install.sh. -->
-                    <Content-Security-Policy>default-src 'none';script-src 'self' 'unsafe-inline' 'unsafe-eval' https:;style-src 'self' 'unsafe-inline' https:;img-src 'self' data: https:;font-src 'self' data: https:;connect-src 'self' ${MCP_ORIGIN};frame-src 'self';object-src 'none';base-uri 'self'</Content-Security-Policy>
-                    <Cache-Control>no-store</Cache-Control>
-                </http_response_headers>
-                <response_content>file://dash/spa.html</response_content>
-            </handler>
-        </rule>
-
         <!-- SPA bootstrap JS. Versioned alongside the shell. -->
         <rule name="bentoclick-spa-js">
             <url><![CDATA[regex:^/b/lib/v1/spa\.js$]]></url>
@@ -206,6 +177,39 @@
                     <Cache-Control>no-store</Cache-Control>
                 </http_response_headers>
                 <response_content>file://dash/client.json</response_content>
+            </handler>
+        </rule>
+
+        <!-- SPA shell. Placed LAST: its catch-all (/b/<owner>/<slug>, plus the
+             /b/ index) must not shadow the specific asset/oauth/config rules
+             above. Owners are always emails (contain @ / %40), so a dashboard
+             path can never collide with /b/oauth/*, /b/lib/*, or /b/config.json.
+             Route parsing happens in spa.js. -->
+        <rule name="bentoclick-spa-shell">
+            <url><![CDATA[regex:^(/b/?|/b/[^/]+/[^/]+)/?(\?.*)?$]]></url>
+            <methods>GET</methods>
+            <handler>
+                <type>static</type>
+                <content_type>text/html; charset=UTF-8</content_type>
+                <http_response_headers>
+                    <!-- connect-src is intentionally narrow: the shell calls
+                         same-origin (config.json, CH) and the MCP for OAuth
+                         discovery. The dashboard iframe (srcdoc, sandboxed,
+                         null origin) inherits this CSP — `'self'` evaluates
+                         to nothing inside the iframe, so a malicious
+                         dashboard can't browser-side-exfil via fetch() to an
+                         arbitrary HTTPS endpoint. CH_FETCH still works
+                         because it's postMessage, not a network connect.
+                         At install time ${MCP_ORIGIN} is substituted by
+                         install.sh (sed over each handlers/*.xml) to the
+                         deployment's MCP scheme+host (e.g. https://mcp.example.com).
+                         If you see the literal `${MCP_ORIGIN}` token in the
+                         deployed CSP, the substitution was skipped — re-run
+                         install.sh. -->
+                    <Content-Security-Policy>default-src 'none';script-src 'self' 'unsafe-inline' 'unsafe-eval' https:;style-src 'self' 'unsafe-inline' https:;img-src 'self' data: https:;font-src 'self' data: https:;connect-src 'self' ${MCP_ORIGIN};frame-src 'self';object-src 'none';base-uri 'self'</Content-Security-Policy>
+                    <Cache-Control>no-store</Cache-Control>
+                </http_response_headers>
+                <response_content>file://dash/spa.html</response_content>
             </handler>
         </rule>
 

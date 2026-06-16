@@ -128,17 +128,18 @@ function parseRoute() {
   if (BASE && p.indexOf(BASE) === 0) p = p.slice(BASE.length) || '/';  // strip mount prefix
   var q = new URLSearchParams(location.search);
   var m;
-  if ((m = p.match(/^\/v\/([^\/]+)\/([^\/]+)\/?$/))) {
-    return { kind: 'dashboard', owner: decodeURIComponent(m[1]), slug: decodeURIComponent(m[2]) };
-  }
-  if (p === '/app' || p === '/app/' || p === '/') {
+  if (p === '/' || p === '') {
     var d = q.get('dashboard');
     if (d) {
       var parts = d.split('/');
       if (parts.length === 2) return { kind: 'dashboard', owner: parts[0], slug: parts[1] };
     }
-    // /app with no args → built-in index listing the caller's own dashboards.
+    // base root with no args → built-in index listing the caller's own dashboards.
     return { kind: 'index' };
+  }
+  // dashboard route: <base>/<owner>/<slug> (owner is a URL-encoded email).
+  if ((m = p.match(/^\/([^\/]+)\/([^\/]+)\/?$/))) {
+    return { kind: 'dashboard', owner: decodeURIComponent(m[1]), slug: decodeURIComponent(m[2]) };
   }
   return { kind: 'unknown' };
 }
@@ -573,7 +574,7 @@ async function renderIndex() {
       return;
     }
     rowsEl.innerHTML = rs.map(function(r) {
-      var href = BASE + '/v/' + encodeURIComponent(r.owner || '') + '/' + encodeURIComponent(r.slug || '');
+      var href = BASE + '/' + encodeURIComponent(r.owner || '') + '/' + encodeURIComponent(r.slug || '');
       var tags = (r.tags || []).map(function(t){ return '<span class="tag">' + escHtml(t) + '</span>'; }).join('');
       var updated = String(r.updated_at || '').slice(0, 16).replace('T', ' ');
       return '<tr>' +
@@ -635,7 +636,7 @@ async function renderIndex() {
 
   var route = parseRoute();
   if (route.kind === 'unknown') {
-    setStatus('No dashboard or page in the URL.\nTry /v/<owner>/<slug> or /p/<name>.', true);
+    setStatus('No dashboard in the URL.\nTry <base>/<owner>/<slug>.', true);
     return;
   }
   if (!lsGet(TOK_KEY)) {
