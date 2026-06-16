@@ -9,7 +9,7 @@ description: >
 # bentoclick-dashboard
 
 Dashboards are rows in `bentoclick.dashboards`, served at
-`https://<spa-origin>/v/<owner>/<slug>` behind OAuth. The viewer's
+`https://<spa-origin>` behind OAuth. The viewer's
 bearer authenticates ClickHouse queries; the dashboard's SQL runs as
 the viewer.
 

@@ -1,0 +1,1506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>BentoClick Architecture — v0.2 draft</title>
+<style>
+  :root {
+    --bg: #fafafa;
+    --text: #1a1a1a;
+    --muted: #555;
+    --border: #ddd;
+    --code-bg: #f1f3f5;
+    --bentoclick: #4a5fc1;
+    --as: #059669;
+    --ch: #d97706;
+    --sidecar: #0891b2;
+    --client: #6b7280;
+    --warning: #dc2626;
+    --pinned: #7c3aed;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    line-height: 1.55;
+    color: var(--text);
+    background: var(--bg);
+    margin: 0;
+    padding: 0;
+  }
+  .wrap {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 48px 32px 96px;
+  }
+  header.doc {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 24px;
+    margin-bottom: 32px;
+  }
+  header.doc h1 {
+    margin: 0 0 4px;
+    font-size: 32px;
+    letter-spacing: -0.01em;
+  }
+  header.doc .meta {
+    color: var(--muted);
+    font-size: 14px;
+  }
+  h2 {
+    margin: 56px 0 16px;
+    font-size: 24px;
+    letter-spacing: -0.01em;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 6px;
+  }
+  h3 {
+    margin: 32px 0 10px;
+    font-size: 18px;
+    letter-spacing: -0.01em;
+  }
+  h4 { margin: 20px 0 8px; font-size: 15px; }
+  p { margin: 12px 0; }
+  ul, ol { margin: 8px 0 12px; padding-left: 22px; }
+  li { margin: 4px 0; }
+  code {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.9em;
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  pre {
+    background: var(--code-bg);
+    padding: 14px 16px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 14px;
+  }
+  th, td {
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th { background: #f0f1f3; font-weight: 600; }
+  .toc {
+    background: #fff;
+    border: 1px solid var(--border);
+    padding: 18px 22px;
+    border-radius: 6px;
+    margin-bottom: 40px;
+  }
+  .toc ol { columns: 2; column-gap: 32px; margin: 0; padding-left: 18px; }
+  .toc a { color: var(--bentoclick); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  figure {
+    margin: 28px 0;
+    text-align: center;
+  }
+  figure svg { max-width: 100%; height: auto; }
+  figcaption {
+    font-size: 13px;
+    color: var(--muted);
+    margin-top: 8px;
+    font-style: italic;
+  }
+  .callout {
+    background: #fff;
+    border-left: 4px solid var(--bentoclick);
+    padding: 14px 18px;
+    margin: 18px 0;
+    border-radius: 0 6px 6px 0;
+  }
+  .callout.warn { border-left-color: var(--warning); }
+  .callout.note { border-left-color: var(--as); }
+  .pill {
+    display: inline-block;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: #eef2ff;
+    color: var(--bentoclick);
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+  .pill.note { background: #ecfdf5; color: var(--as); }
+  .pill.warn { background: #fef2f2; color: var(--warning); }
+  .legend { font-size: 13px; color: var(--muted); margin-top: 4px; }
+  hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 40px 0;
+  }
+  /* SVG common */
+  .svg-box-fill-bentoclick { fill: #eef2ff; stroke: var(--bentoclick); }
+  .svg-box-fill-as { fill: #ecfdf5; stroke: var(--as); }
+  .svg-box-fill-ch { fill: #fef3c7; stroke: var(--ch); }
+  .svg-box-fill-sidecar { fill: #cffafe; stroke: var(--sidecar); }
+  .svg-box-fill-client { fill: #f3f4f6; stroke: var(--client); }
+  .svg-box-fill-storage { fill: #f5f3ff; stroke: var(--pinned); }
+  .svg-label { font: 600 13px -apple-system, sans-serif; fill: #1a1a1a; }
+  .svg-sub { font: 11px -apple-system, sans-serif; fill: #555; }
+  .svg-tiny { font: 10px -apple-system, sans-serif; fill: #555; }
+  .svg-arrow { stroke: #555; stroke-width: 1.5; fill: none; }
+  .svg-arrow-light { stroke: #999; stroke-width: 1; fill: none; stroke-dasharray: 4 3; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="doc">
+  <h1>BentoClick Architecture</h1>
+  <div class="meta">
+    Status: draft · Target: v0.2 backend · Last updated: 2026-05-21
+  </div>
+</header>
+
+<div class="toc">
+  <strong>Contents</strong>
+  <ol>
+    <li><a href="#summary">Summary &amp; framing</a></li>
+    <li><a href="#inherited">Inherited from altinity-mcp</a></li>
+    <li><a href="#added">What BentoClick adds</a></li>
+    <li><a href="#identity">Identity &amp; the sidecar</a></li>
+    <li><a href="#parity">OSS / Antalya parity</a></li>
+    <li><a href="#clients">Client access patterns</a></li>
+    <li><a href="#storage">Storage model</a></li>
+    <li><a href="#rendering">Dashboard rendering path</a></li>
+    <li><a href="#lifecycle">Dashboard lifecycle</a></li>
+    <li><a href="#sanitize">Sanitization &amp; validation</a></li>
+    <li><a href="#mcp">MCP additions</a></li>
+    <li><a href="#http">HTTP API</a></li>
+    <li><a href="#ha">HA validation chain</a></li>
+    <li><a href="#threat">Threat model</a></li>
+    <li><a href="#deploy">Deployment shape</a></li>
+    <li><a href="#migrate">Migration from altinity-mcp</a></li>
+    <li><a href="#milestones">Milestones</a></li>
+    <li><a href="#open">Open items</a></li>
+    <li><a href="#refs">References</a></li>
+  </ol>
+</div>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/>
+    </marker>
+    <marker id="arrow-light" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#999"/>
+    </marker>
+  </defs>
+</svg>
+
+<h2 id="summary">1. Summary &amp; framing</h2>
+
+<p>
+  We need to evolve or fork
+  <a href="https://github.com/Altinity/altinity-mcp"><code>Altinity/altinity-mcp</code></a>
+  into a full-featured <strong>AI Gateway in front of a fleet of ClickHouse clusters with business data</strong>
+  — a single control plane that LLM agents, dashboard authors, and end-users hit, brokering identity,
+  scope, role, and least-privilege access into many downstream ClickHouse deployments.
+</p>
+
+<p>
+  BentoClick is the product name for the dashboard surface added on top. It is <strong>not</strong>
+  a from-scratch backend. The AI-Gateway framing matters because it sets the security posture for
+  the whole design:
+</p>
+
+<ul>
+  <li>The gateway sits in front of <em>many</em> customer ClickHouse clusters — multi-cluster from day one.</li>
+  <li>Downstream data is business data — payments, customer records, operational telemetry. Defaults conservative, opt-in explicit, least-privilege enforced at the gateway <em>and</em> at ClickHouse.</li>
+  <li>LLM agents (claude.ai, ChatGPT, internal agents) are first-class clients alongside browsers. The MCP surface is not a side feature.</li>
+</ul>
+
+<figure>
+  <svg viewBox="0 0 900 380" width="900" role="img" aria-label="High-level architecture">
+    <!-- Clients column -->
+    <g>
+      <rect x="20" y="40" width="170" height="300" rx="10" class="svg-box-fill-client" stroke-width="1.5"/>
+      <text x="105" y="62" text-anchor="middle" class="svg-label">Clients</text>
+      <text x="105" y="100" text-anchor="middle" class="svg-sub">Browser · SPA</text>
+      <text x="105" y="135" text-anchor="middle" class="svg-sub">LLM agent (MCP)</text>
+      <text x="105" y="170" text-anchor="middle" class="svg-sub">Python · clickhouse-connect</text>
+      <text x="105" y="205" text-anchor="middle" class="svg-sub">JDBC · DBeaver · DataGrip</text>
+      <text x="105" y="240" text-anchor="middle" class="svg-sub">Superset · Grafana</text>
+      <text x="105" y="275" text-anchor="middle" class="svg-sub">clickhouse-client CLI</text>
+      <text x="105" y="320" text-anchor="middle" class="svg-tiny">all present AS-issued JWT</text>
+    </g>
+
+    <!-- BentoClick + AS column -->
+    <g>
+      <rect x="270" y="60" width="220" height="110" rx="10" class="svg-box-fill-as" stroke-width="1.5"/>
+      <text x="380" y="84" text-anchor="middle" class="svg-label">External Authorization Server</text>
+      <text x="380" y="104" text-anchor="middle" class="svg-sub">Auth0 / Authentik / Keycloak / Rauthy</text>
+      <text x="380" y="124" text-anchor="middle" class="svg-sub">DCR · /authorize · /token</text>
+      <text x="380" y="144" text-anchor="middle" class="svg-sub">refresh rotation · JWKS</text>
+
+      <rect x="270" y="200" width="220" height="140" rx="10" class="svg-box-fill-bentoclick" stroke-width="1.5"/>
+      <text x="380" y="224" text-anchor="middle" class="svg-label">BentoClick</text>
+      <text x="380" y="242" text-anchor="middle" class="svg-tiny">(evolved altinity-mcp, Go)</text>
+      <text x="380" y="266" text-anchor="middle" class="svg-sub">Dashboards · sharing · SPA</text>
+      <text x="380" y="284" text-anchor="middle" class="svg-sub">MCP server · MCP tools</text>
+      <text x="380" y="302" text-anchor="middle" class="svg-sub">Resource-server (its own API)</text>
+      <text x="380" y="320" text-anchor="middle" class="svg-tiny" style="fill: #4a5fc1; font-weight: 600;">never the data-plane identity authority</text>
+    </g>
+
+    <!-- ClickHouse column -->
+    <g>
+      <rect x="570" y="40" width="310" height="300" rx="10" stroke="#ccc" fill="#fff" stroke-width="1"/>
+      <text x="725" y="62" text-anchor="middle" class="svg-label">ClickHouse fleet</text>
+
+      <!-- CH cluster 1 with sidecar -->
+      <rect x="590" y="80" width="270" height="80" rx="8" class="svg-box-fill-ch" stroke-width="1.5"/>
+      <text x="610" y="100" class="svg-sub" style="font-weight:600">CH cluster 1 · OSS</text>
+      <rect x="730" y="118" width="115" height="30" rx="4" class="svg-box-fill-sidecar" stroke-width="1"/>
+      <text x="787" y="137" text-anchor="middle" class="svg-tiny" style="font-weight:600;">JWT verifier sidecar</text>
+      <text x="610" y="128" class="svg-tiny">http_authentication →</text>
+
+      <!-- CH cluster 2 Antalya -->
+      <rect x="590" y="180" width="270" height="60" rx="8" class="svg-box-fill-ch" stroke-width="1.5"/>
+      <text x="610" y="200" class="svg-sub" style="font-weight:600">CH cluster 2 · Antalya 26.1+</text>
+      <text x="610" y="222" class="svg-tiny">native JWT validation against JWKS</text>
+
+      <!-- CH cluster N -->
+      <rect x="590" y="260" width="270" height="60" rx="8" class="svg-box-fill-ch" stroke-width="1.5"/>
+      <text x="610" y="280" class="svg-sub" style="font-weight:600">CH cluster N · …</text>
+      <text x="610" y="302" class="svg-tiny">analytical query execution · business data</text>
+    </g>
+
+    <!-- Arrows: clients to AS (login) -->
+    <path d="M 190 150 Q 230 130 270 110" class="svg-arrow" marker-end="url(#arrow)"/>
+    <text x="225" y="118" class="svg-tiny" style="font-style:italic">OAuth login</text>
+
+    <!-- Arrows: clients to BentoClick (UI, MCP, dashboard API) -->
+    <path d="M 190 240 Q 230 250 270 260" class="svg-arrow" marker-end="url(#arrow)"/>
+    <text x="218" y="245" class="svg-tiny" style="font-style:italic">UI · MCP · API</text>
+
+    <!-- Arrows: clients to CH (direct, with JWT) -->
+    <path d="M 190 105 L 590 105" class="svg-arrow" marker-end="url(#arrow)"/>
+    <text x="380" y="98" text-anchor="middle" class="svg-tiny" style="font-style:italic">user JWT in password slot</text>
+    <path d="M 190 210 L 590 210" class="svg-arrow" marker-end="url(#arrow)"/>
+    <path d="M 190 290 L 590 290" class="svg-arrow" marker-end="url(#arrow)"/>
+
+    <!-- Sidecar / native to AS JWKS -->
+    <path d="M 787 118 Q 787 80 490 115" class="svg-arrow-light" marker-end="url(#arrow-light)"/>
+    <text x="640" y="76" class="svg-tiny" style="fill:#666">JWKS (cached)</text>
+    <path d="M 670 197 Q 600 180 490 130" class="svg-arrow-light" marker-end="url(#arrow-light)"/>
+  </svg>
+  <figcaption>Figure 1 — Three independent flows: clients log in at the AS, talk to BentoClick for UI/MCP/dashboard API, and talk to ClickHouse directly with their AS-issued JWT in the password field. BentoClick is never the data-plane <em>identity authority</em>: CH validates the JWT itself, via sidecar (OSS) or natively (Antalya). BentoClick <em>is</em> on the request path for MCP query execution and for some share-rendering modes — see §8 for the rendering-path decision.</figcaption>
+</figure>
+
+<h2 id="inherited">2. What altinity-mcp already provides</h2>
+
+<p>
+  Most of the gateway machinery already exists. BentoClick inherits it unchanged.
+</p>
+
+<ul>
+  <li><strong>OAuth resource-server posture</strong> (PR #110 — "redefine gating mode as pure OAuth resource server"). External AS owns DCR, /authorize, /token, refresh rotation, reuse detection, revocation. altinity-mcp validates incoming AS-issued JWTs (signature + RFC 8707 audience byte-equality + expiry) and authorizes per-tool scopes.</li>
+  <li><strong>Cluster-secret + impersonation chain</strong> in <code>pkg/clickhouse/client.go</code>, exercised by <code>cluster_secret_test.go</code>. Used today; preserved for forward-mode and non-dashboard MCP. Not on BentoClick's dashboard data path under this proposal.</li>
+  <li><strong>Per-query role binding</strong> via the Altinity clickhouse-go fork <code>feature/interserver-extra-roles</code> @ <code>3e22df3</code> (bumps <code>DBMS_TCP_PROTOCOL_VERSION</code> to 54472).</li>
+  <li><strong><code>altinity.mcp_role_metadata</code></strong> whitelist (#107) — operator-curated set of CH roles surfaced to the consent screen.</li>
+  <li><strong>Refresh-token reuse-detection design</strong> in CH MergeTree (#106). Deferred for v1 (external AS handles it). Ready if MCP re-enters AS territory.</li>
+  <li><strong>Dynamic MCP tools from CH schema</strong> (<code>pkg/server/server_dynamic_tools.go</code>), MCP resources, <code>execute_query</code>, schema discovery.</li>
+  <li><strong>Fail-closed discipline</strong>: startup refusal on misconfiguration, ERR + 500 on state failures, no graceful degradation.</li>
+</ul>
+
+<h2 id="added">3. What BentoClick adds</h2>
+
+<ul>
+  <li>Dashboard CRUD, sanitization boundary, validate / preview / publish flows.</li>
+  <li>Sharing (pinned-version-by-default share links).</li>
+  <li>SPA serving with versioned runtime artifacts and <code>available_on_nodes</code> tracking.</li>
+  <li>Dashboard MCP tool family, additive to altinity-mcp's existing surface.</li>
+  <li>Dedicated control-plane ClickHouse for gateway state (dashboards, shares, audit, artifact registry).</li>
+  <li>Multi-cluster dashboard model: each dashboard targets one connected CH cluster, identified by <code>connection_id</code>.</li>
+  <li>The <strong>JWT verifier sidecar</strong> as a separately-deployable component for OSS CH installations.</li>
+</ul>
+
+<div class="callout warn">
+  <strong>What BentoClick deliberately does <em>not</em> add in v0.2.</strong>
+  Multi-tenant orgs/teams, folder/project hierarchy, viewer/editor roles, ownership
+  transfer — all v1.x. Dashboards have a single owner. <code>org_id</code> columns are
+  reserved on every table with a <code>'default'</code> fallback, so the migration to
+  real tenancy is additive when it lands. Realistic BI workflows will hit this limit
+  fast; this is a v0.2 scoping choice, not a permanent stance.
+</div>
+
+<h2 id="identity">4. Identity &amp; the sidecar</h2>
+
+<p>
+  BentoClick does not mint, hold, or proxy any data-plane credential. The flow is OAuth-textbook:
+  user authenticates at the AS, receives a JWT, presents the JWT directly to ClickHouse.
+  ClickHouse validates it.
+</p>
+
+<figure>
+  <svg viewBox="0 0 900 460" width="900" role="img" aria-label="Identity flow">
+    <!-- User -->
+    <rect x="20" y="40" width="120" height="60" rx="8" class="svg-box-fill-client" stroke-width="1.5"/>
+    <text x="80" y="76" text-anchor="middle" class="svg-label">Client</text>
+
+    <!-- AS -->
+    <rect x="380" y="40" width="180" height="60" rx="8" class="svg-box-fill-as" stroke-width="1.5"/>
+    <text x="470" y="68" text-anchor="middle" class="svg-label">Authorization Server</text>
+    <text x="470" y="84" text-anchor="middle" class="svg-tiny">Auth0 · Keycloak · Rauthy</text>
+
+    <!-- BentoClick -->
+    <rect x="20" y="200" width="180" height="80" rx="8" class="svg-box-fill-bentoclick" stroke-width="1.5"/>
+    <text x="110" y="228" text-anchor="middle" class="svg-label">BentoClick</text>
+    <text x="110" y="248" text-anchor="middle" class="svg-tiny">Dashboard API · UI · MCP</text>
+    <text x="110" y="265" text-anchor="middle" class="svg-tiny">(its own resource-server)</text>
+
+    <!-- ClickHouse -->
+    <rect x="380" y="200" width="180" height="80" rx="8" class="svg-box-fill-ch" stroke-width="1.5"/>
+    <text x="470" y="228" text-anchor="middle" class="svg-label">ClickHouse</text>
+    <text x="470" y="248" text-anchor="middle" class="svg-tiny">customer cluster (data plane)</text>
+    <text x="470" y="265" text-anchor="middle" class="svg-tiny">cluster N</text>
+
+    <!-- Sidecar -->
+    <rect x="640" y="200" width="220" height="80" rx="8" class="svg-box-fill-sidecar" stroke-width="1.5"/>
+    <text x="750" y="228" text-anchor="middle" class="svg-label">JWT verifier sidecar</text>
+    <text x="750" y="248" text-anchor="middle" class="svg-tiny">~300 LOC · stateless</text>
+    <text x="750" y="265" text-anchor="middle" class="svg-tiny">JWKS-only secrets</text>
+
+    <!-- AS JWKS (cached at sidecar/CH) -->
+    <rect x="640" y="60" width="220" height="40" rx="8" class="svg-box-fill-as" stroke-width="1" stroke-dasharray="3 2"/>
+    <text x="750" y="84" text-anchor="middle" class="svg-tiny" style="font-weight:600">/.well-known/jwks.json</text>
+
+    <!-- Numbered flow -->
+
+    <!-- 1: client → AS login -->
+    <path d="M 140 60 L 380 60" class="svg-arrow" marker-end="url(#arrow)"/>
+    <circle cx="155" cy="50" r="9" fill="#fff" stroke="#555"/>
+    <text x="155" y="54" text-anchor="middle" class="svg-tiny" style="font-weight:600">1</text>
+    <text x="255" y="55" text-anchor="middle" class="svg-tiny">OAuth login + consent (role pick)</text>
+
+    <!-- 2: AS → client JWT -->
+    <path d="M 380 90 L 140 90" class="svg-arrow" marker-end="url(#arrow)"/>
+    <circle cx="155" cy="115" r="9" fill="#fff" stroke="#555"/>
+    <text x="155" y="119" text-anchor="middle" class="svg-tiny" style="font-weight:600">2</text>
+    <text x="255" y="120" text-anchor="middle" class="svg-tiny">JWT (signed, with roles claim)</text>
+
+    <!-- 3: client → BentoClick (dashboard) -->
+    <path d="M 80 100 L 80 200" class="svg-arrow" marker-end="url(#arrow)"/>
+    <circle cx="40" cy="155" r="9" fill="#fff" stroke="#555"/>
+    <text x="40" y="159" text-anchor="middle" class="svg-tiny" style="font-weight:600">3</text>
+    <text x="95" y="155" class="svg-tiny">dashboard API</text>
+    <text x="95" y="168" class="svg-tiny">(JWT bearer)</text>
+
+    <!-- 4: client → CH direct -->
+    <path d="M 140 80 Q 280 140 400 200" class="svg-arrow" marker-end="url(#arrow)"/>
+    <circle cx="240" cy="135" r="9" fill="#fff" stroke="#555"/>
+    <text x="240" y="139" text-anchor="middle" class="svg-tiny" style="font-weight:600">4</text>
+    <text x="300" y="132" class="svg-tiny">user:JWT in Basic / password slot</text>
+
+    <!-- 5: CH → sidecar -->
+    <path d="M 560 240 L 640 240" class="svg-arrow" marker-end="url(#arrow)"/>
+    <circle cx="600" cy="225" r="9" fill="#fff" stroke="#555"/>
+    <text x="600" y="229" text-anchor="middle" class="svg-tiny" style="font-weight:600">5</text>
+    <text x="600" y="262" text-anchor="middle" class="svg-tiny">http_auth callback</text>
+
+    <!-- 6: sidecar → JWKS (cached) -->
+    <path d="M 750 200 L 750 100" class="svg-arrow-light" marker-end="url(#arrow-light)"/>
+    <circle cx="775" cy="155" r="9" fill="#fff" stroke="#999"/>
+    <text x="775" y="159" text-anchor="middle" class="svg-tiny" style="font-weight:600">6</text>
+    <text x="830" y="155" class="svg-tiny">JWKS</text>
+    <text x="830" y="168" class="svg-tiny">(cached)</text>
+
+    <!-- 7: sidecar → CH (200 + roles) -->
+    <path d="M 640 260 L 560 260" class="svg-arrow" marker-end="url(#arrow)"/>
+    <circle cx="600" cy="278" r="9" fill="#fff" stroke="#555"/>
+    <text x="600" y="282" text-anchor="middle" class="svg-tiny" style="font-weight:600">7</text>
+    <text x="600" y="295" text-anchor="middle" class="svg-tiny">200 (auth ok) · or 401</text>
+
+    <!-- 8: CH executes -->
+    <path d="M 440 280 L 440 380 L 140 380 L 140 100" class="svg-arrow" marker-end="url(#arrow)"/>
+    <circle cx="290" cy="395" r="9" fill="#fff" stroke="#555"/>
+    <text x="290" y="399" text-anchor="middle" class="svg-tiny" style="font-weight:600">8</text>
+    <text x="290" y="375" text-anchor="middle" class="svg-tiny">query result (byte-for-byte stream)</text>
+
+    <!-- Side note: BentoClick → its own resource-server check using JWKS -->
+    <path d="M 200 230 Q 320 165 640 90" class="svg-arrow-light" marker-end="url(#arrow-light)"/>
+    <text x="310" y="195" class="svg-tiny" style="fill:#666">BentoClick also validates JWTs locally (own API)</text>
+  </svg>
+  <figcaption>Figure 2 — Identity flow. The client's JWT reaches ClickHouse directly with <code>?role=</code> on the URL. ClickHouse calls the sidecar (OSS) or validates natively (Antalya); the sidecar returns 200 for auth only — role binding is set by the URL parameter and enforced by CH RBAC. BentoClick is consulted only for the dashboard UI / API / MCP surface, and validates the same JWT against the same JWKS for its own protected endpoints.</figcaption>
+</figure>
+
+<h3 id="multi-audience">4.0 One identity, many tokens</h3>
+
+<p>
+  RFC 8707 audience binding is byte-equal. One JWT cannot serve both
+  <code>aud=bentoclick-api</code> and <code>aud=ch:cluster-1</code>. The same user session
+  yields multiple access tokens, one per resource the user touches:
+</p>
+
+<ul>
+  <li><code>aud=bentoclick-api</code> for BentoClick's dashboard/sharing/MCP endpoints.</li>
+  <li><code>aud=ch:cluster-1</code>, <code>aud=ch:cluster-2</code>, … per CH cluster the user queries.</li>
+</ul>
+
+<p>
+  The AS issues all of these from one underlying refresh-token chain. The token-helper
+  manages a per-(resource, scope) cache and the SPA does the same. Each call to
+  <code>bentoclick token --audience=ch:cluster-1</code> returns a different JWT than
+  <code>bentoclick token --audience=bentoclick-api</code>, with identical
+  <code>sub</code>/<code>email</code> but distinct <code>aud</code>.
+</p>
+
+<p>
+  This is what the altinity-mcp #104 hardening already enforces on the validation side;
+  v0.2 makes the issuance side match.
+</p>
+
+<h3>4.1 The JWT verifier sidecar</h3>
+
+<p>
+  A small single-binary stateless validator. ~300 LOC of Go. Hardened deployment surface:
+  read-only filesystem, listens on a unix socket or loopback, outbound network to AS JWKS only,
+  no in-process state about users.
+</p>
+
+<h4>Wire shape</h4>
+
+<p>ClickHouse → sidecar:</p>
+
+<pre><code>POST /verify HTTP/1.1
+Host: 127.0.0.1:9999
+Authorization: Basic &lt;base64(boris@altinity.com:&lt;JWT&gt;)&gt;</code></pre>
+
+<p>Sidecar → ClickHouse on success:</p>
+
+<pre><code>200 OK
+Content-Type: application/json
+{
+  "settings": {
+    "readonly": "1",
+    "max_memory_usage": "10000000000"
+  }
+}</code></pre>
+
+<p>
+  The response body is parsed by CH's <code>SettingsAuthResponseParser</code>
+  (<code>src/Access/SettingsAuthResponseParser.cpp</code>): JSON with an optional
+  <code>settings</code> object whose key/values are applied as session settings via
+  <code>settingStringToValueUtil</code>. A bare 200 with no body is sufficient for
+  "auth OK." The response cannot carry roles — see
+  <a href="#rolebinding">§4.2</a>.
+</p>
+
+<p>
+  On failure: any non-200 status. The body may carry a structured error with a stable
+  <code>error_class</code> (<code>expired</code>, <code>bad_audience</code>,
+  <code>signature_invalid</code>, <code>user_mismatch</code>, <code>scope_missing</code>)
+  for the sidecar's own log; CH only cares about the status code.
+</p>
+
+<div class="callout warn">
+  <strong>Common misconception.</strong> CH's <code>http_authentication</code> response
+  format does not support per-session roles. It only supports session
+  <em>settings</em> (e.g. <code>readonly</code>, memory and complexity caps). Role binding
+  is handled out-of-band via the URL <code>?role=</code> parameter and CH RBAC — see next
+  subsection.
+</div>
+
+<h4>Validation steps</h4>
+
+<ol>
+  <li>Parse Basic header. Extract <code>user</code>, <code>password</code> = JWT.</li>
+  <li>Decode JWT header for <code>kid</code>. Look up cached JWKS; JIT-refresh on miss.</li>
+  <li>Verify signature with the matched key.</li>
+  <li>Verify <code>iss</code> exact-match, <code>aud</code> byte-equal (RFC 8707), <code>exp</code>, <code>nbf</code>.</li>
+  <li>If <code>email_verified</code> claim present, require <code>true</code>.</li>
+  <li>Compare username claim against Basic <code>user</code>. Strict by default.</li>
+  <li>Verify required scope present.</li>
+  <li>Optionally derive session <code>settings</code> from the JWT (e.g. <code>readonly: 1</code> if scope is read-only).</li>
+  <li>Return 200 with optional <code>{"settings": {...}}</code> body. <strong>Not roles</strong> — role binding is handled out-of-band (§4.2).</li>
+</ol>
+
+<p>Every step is local. No outbound network call per request after JWKS is cached.</p>
+
+<h4>Config sketch</h4>
+
+<pre><code>listen:
+  unix: /run/ch-jwt-verify/sock
+
+as:
+  issuer: https://as.example.com
+  jwks_url: https://as.example.com/.well-known/jwks.json
+  jwks_cache_ttl: 5m
+  jwks_refresh_ahead: 1m
+
+expected_audience: ch:cluster-1
+
+identity:
+  username_claim: email
+  match_mode: lowercase_equal
+  require_email_verified: true
+
+authorization:
+  required_scope: data:read
+  # Note: no roles_claim here. Role binding is via URL ?role= (OSS)
+  # or JWT groups claim consumed natively by CH (Antalya). See §4.2.
+
+settings_from_scope:
+  # Optional: map JWT scopes to session settings the sidecar returns.
+  data:read:
+    readonly: "1"
+
+cache:
+  result_cache_ttl: 30s
+  negative_cache_ttl: 5s</code></pre>
+
+<h3 id="rolebinding">4.2 Role binding</h3>
+
+<p>
+  CH's <code>http_authentication</code> response can carry session settings but
+  <strong>not roles</strong>. Role selection happens elsewhere — and the right
+  "elsewhere" differs by deployment and by who's driving the client. The threat
+  surface is asymmetric:
+</p>
+
+<ul>
+  <li><strong>LLM agents</strong> (MCP path): we don't trust the agent to honor the user's consent choice. Role binding must be enforced server-side, in a place the agent cannot manipulate.</li>
+  <li><strong>Human-driven clients</strong> (Python notebook, DBeaver, SPA): the consenter and the query-issuer are the same person. There is no consent to violate — the human picks roles within their granted set, and CH RBAC is the only ceiling needed.</li>
+</ul>
+
+<p>This gives a clean two-by-two:</p>
+
+<table>
+  <thead>
+    <tr><th>Deployment</th><th>MCP path (untrusted client)</th><th>Direct clients (human)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Antalya 26.1+</strong></td>
+      <td>JWT <code>groups</code> claim → CH <code>external_roles</code> → RBAC ceiling. Agent cannot expand. <span class="pill note">strong</span></td>
+      <td>Same JWT flow. <span class="pill note">strong</span></td>
+    </tr>
+    <tr>
+      <td><strong>OSS + sidecar</strong></td>
+      <td>MCP server pins <code>?role=&lt;consent_role&gt;</code> on the CH URL; agent has no surface to override. <span class="pill note">strong by enforcement at the gateway</span></td>
+      <td>Client appends <code>?role=</code> from its JWT claim; CH RBAC bounds. <span class="pill">acceptable — human is the consenter</span></td>
+    </tr>
+  </tbody>
+</table>
+
+<h4>How ClickHouse applies <code>?role=</code></h4>
+
+<p>Verified in <code>src/Server/HTTPHandler.cpp:236-238</code>:</p>
+
+<pre><code>auto roles = params.getAll("role");
+if (!roles.empty())
+    context-&gt;setCurrentRoles(roles);</code></pre>
+
+<p>
+  Multiple <code>?role=a&amp;role=b</code> supported. <code>setCurrentRoles</code> rejects
+  with access-denied if the user isn't actually granted the role. URL-supplied role is
+  always a <em>narrowing</em> directive, never an escalation. CH RBAC + the
+  <code>altinity.mcp_role_metadata</code> whitelist (#107) +
+  <code>DEFAULT ROLE NONE</code> ensure the ceiling is operator-curated.
+</p>
+
+<h4>Antalya's group→role binding (native JWT path)</h4>
+
+<p>
+  Confirmed in <code>origin/antalya-26.1</code> source — this is an Antalya feature,
+  not in upstream OSS:
+</p>
+
+<ul>
+  <li><code>src/Access/TokenProcessorsJWT.cpp:399-400</code> — JWT's <code>groups_claim</code> populates <code>credentials.setGroups(...)</code>.</li>
+  <li><code>src/Access/ExternalAuthenticators.cpp:622</code> — <code>cache_entry.external_roles = credentials.getGroups()</code>.</li>
+  <li><code>src/Access/ContextAccess.cpp:370-373</code> — <code>external_roles</code> merged into <code>current_roles</code>, intersected with <code>granted_roles.findGrantedWithAdminOption(*params.external_roles)</code>.</li>
+</ul>
+
+<p>
+  On Antalya, the JWT <em>is</em> the role binding: AS embeds groups in the JWT,
+  CH applies them as the active role set, intersected with what the user is granted.
+  Clients have no opportunity to expand. Strong consent-binding for free.
+</p>
+
+<h4>MCP-side enforcement (OSS path)</h4>
+
+<p>
+  altinity-mcp/BentoClick already holds the JWT and the consent context per session.
+  It builds the URL on the agent's behalf, never letting the agent pick the
+  <code>?role=</code> value. The MCP server is the enforcement point; the agent has no
+  tool argument that influences role selection.
+</p>
+
+<pre><code>// pkg/clickhouse/client.go — sketch
+func (c *Client) ExecuteQueryHTTP(ctx context.Context, sess *Session, sql string) (...) {
+    u := c.baseURL
+    u.RawQuery = url.Values{
+        "role": []string{sess.ConsentRole},   // enforced here, not agent-controllable
+    }.Encode()
+    // POST sql to u with X-ClickHouse-User: sess.User,
+    //                   X-ClickHouse-Password: sess.JWT
+}</code></pre>
+
+<p>
+  Same enforcement boundary altinity-mcp already uses for scope-to-tool gating in #107.
+  Dynamic tools (<code>pkg/server/server_dynamic_tools.go</code>) and MCP resources
+  go through the same client and inherit the same role pinning, so schema discovery
+  also runs as the consent role — the agent sees the schema the consent role can read.
+</p>
+
+<div class="callout note">
+  <strong>HTTP protocol only.</strong> <code>?role=</code> is a CH HTTP-handler primitive.
+  Native protocol (port 9000) needs <code>SET ROLE 'name'</code> SQL after connect, which
+  is awkward with pooled connections. v0.2 standardizes on the CH HTTP protocol for the
+  BentoClick story. <code>clickhouse-connect</code> (Python), HTTP-mode JDBC, and the SPA
+  fetch are all native-fit; native-protocol clients (<code>clickhouse-driver</code>) need
+  the <code>SET ROLE</code> workaround.
+</div>
+
+<h2 id="parity">5. OSS / Antalya parity</h2>
+
+<p>
+  From BentoClick's perspective, OSS ClickHouse and Antalya/Cloud ClickHouse are
+  <em>identical</em>: in both cases, BentoClick is out of the data-plane auth path and
+  the client's JWT is presented directly to ClickHouse. The only difference is on
+  the CH-side ops: OSS deploys a sidecar; Antalya validates natively.
+</p>
+
+<figure>
+  <svg viewBox="0 0 900 320" width="900" role="img" aria-label="OSS vs Antalya parity">
+    <!-- BentoClick (shared) -->
+    <rect x="350" y="20" width="200" height="60" rx="8" class="svg-box-fill-bentoclick" stroke-width="1.5"/>
+    <text x="450" y="48" text-anchor="middle" class="svg-label">BentoClick</text>
+    <text x="450" y="65" text-anchor="middle" class="svg-tiny">identical view in both cases</text>
+
+    <!-- OSS half -->
+    <rect x="40" y="120" width="380" height="180" rx="10" stroke="#bbb" fill="#fff" stroke-width="1.5" stroke-dasharray="6 4"/>
+    <text x="230" y="142" text-anchor="middle" class="svg-label">OSS ClickHouse</text>
+
+    <rect x="80" y="160" width="140" height="70" rx="8" class="svg-box-fill-ch" stroke-width="1.5"/>
+    <text x="150" y="190" text-anchor="middle" class="svg-label">ClickHouse</text>
+    <text x="150" y="208" text-anchor="middle" class="svg-tiny">http_authentication →</text>
+
+    <rect x="250" y="160" width="140" height="70" rx="8" class="svg-box-fill-sidecar" stroke-width="1.5"/>
+    <text x="320" y="190" text-anchor="middle" class="svg-label">Sidecar</text>
+    <text x="320" y="208" text-anchor="middle" class="svg-tiny">JWT verifier</text>
+
+    <path d="M 220 195 L 250 195" class="svg-arrow" marker-end="url(#arrow)"/>
+    <path d="M 320 160 L 320 130" class="svg-arrow-light" marker-end="url(#arrow-light)"/>
+    <text x="350" y="148" class="svg-tiny">JWKS</text>
+
+    <!-- Antalya half -->
+    <rect x="480" y="120" width="380" height="180" rx="10" stroke="#bbb" fill="#fff" stroke-width="1.5" stroke-dasharray="6 4"/>
+    <text x="670" y="142" text-anchor="middle" class="svg-label">Antalya 26.1+ / CH Cloud</text>
+
+    <rect x="600" y="160" width="140" height="70" rx="8" class="svg-box-fill-ch" stroke-width="1.5"/>
+    <text x="670" y="190" text-anchor="middle" class="svg-label">ClickHouse</text>
+    <text x="670" y="208" text-anchor="middle" class="svg-tiny">native JWT validation</text>
+
+    <path d="M 670 160 L 670 130" class="svg-arrow-light" marker-end="url(#arrow-light)"/>
+    <text x="700" y="148" class="svg-tiny">JWKS</text>
+
+    <!-- arrows from BentoClick to both -->
+    <path d="M 380 80 L 230 120" class="svg-arrow-light" stroke-dasharray="0"/>
+    <path d="M 520 80 L 670 120" class="svg-arrow-light" stroke-dasharray="0"/>
+
+    <text x="450" y="313" text-anchor="middle" class="svg-tiny" style="font-style:italic">
+      The same client JWT works for both. The only difference is whether a sidecar process exists on the CH side.
+    </text>
+  </svg>
+  <figcaption>Figure 3 — OSS / Antalya parity. The sidecar is the bridge that makes stock OSS ClickHouse behave the way Antalya does natively.</figcaption>
+</figure>
+
+<h2 id="clients">6. Client access patterns</h2>
+
+<p>
+  The architecture only works if real clients can actually obtain and present JWTs.
+  Most clients can't speak OAuth natively, but they all accept a username and a password —
+  and a JWT in the password field is fine. The problem reduces from
+  <em>"redesign every CH client for OAuth"</em> to <em>"how does the client obtain a JWT."</em>
+</p>
+
+<figure>
+  <svg viewBox="0 0 900 380" width="900" role="img" aria-label="Client convergence">
+    <!-- Token helper -->
+    <rect x="20" y="40" width="200" height="220" rx="10" class="svg-box-fill-bentoclick" stroke-width="1.5"/>
+    <text x="120" y="65" text-anchor="middle" class="svg-label">Token helper CLI</text>
+    <text x="120" y="82" text-anchor="middle" class="svg-tiny">single Go binary · ~500 LOC</text>
+    <text x="120" y="108" text-anchor="middle" class="svg-sub">bentoclick login</text>
+    <text x="120" y="128" text-anchor="middle" class="svg-tiny">→ device-code / PKCE</text>
+    <text x="120" y="148" text-anchor="middle" class="svg-tiny">→ refresh token in keyring</text>
+    <text x="120" y="180" text-anchor="middle" class="svg-sub">bentoclick token [--role]</text>
+    <text x="120" y="200" text-anchor="middle" class="svg-tiny">→ prints JWT or role claim</text>
+    <text x="120" y="220" text-anchor="middle" class="svg-sub">bentoclick daemon</text>
+    <text x="120" y="240" text-anchor="middle" class="svg-tiny">→ proactive refresh, unix socket</text>
+
+    <!-- Clients fan -->
+    <g>
+      <rect x="280" y="25" width="220" height="50" rx="8" class="svg-box-fill-client" stroke-width="1.2"/>
+      <text x="390" y="48" text-anchor="middle" class="svg-sub">Python (clickhouse-connect)</text>
+      <text x="390" y="63" text-anchor="middle" class="svg-tiny">in-process oauth lib</text>
+
+      <rect x="280" y="90" width="220" height="50" rx="8" class="svg-box-fill-client" stroke-width="1.2"/>
+      <text x="390" y="113" text-anchor="middle" class="svg-sub">JDBC + DBeaver / DataGrip</text>
+      <text x="390" y="128" text-anchor="middle" class="svg-tiny">helper-CLI or auth-provider patch</text>
+
+      <rect x="280" y="155" width="220" height="50" rx="8" class="svg-box-fill-client" stroke-width="1.2"/>
+      <text x="390" y="178" text-anchor="middle" class="svg-sub">clickhouse-client CLI</text>
+      <text x="390" y="193" text-anchor="middle" class="svg-tiny">--password "$(bentoclick token)"</text>
+
+      <rect x="280" y="220" width="220" height="50" rx="8" class="svg-box-fill-client" stroke-width="1.2"/>
+      <text x="390" y="243" text-anchor="middle" class="svg-sub">Superset / Grafana</text>
+      <text x="390" y="258" text-anchor="middle" class="svg-tiny">service identity (client_credentials)</text>
+
+      <rect x="280" y="285" width="220" height="50" rx="8" class="svg-box-fill-client" stroke-width="1.2"/>
+      <text x="390" y="308" text-anchor="middle" class="svg-sub">SPA / browser</text>
+      <text x="390" y="323" text-anchor="middle" class="svg-tiny">AS code-flow + PKCE</text>
+    </g>
+
+    <!-- Helper to clients arrows -->
+    <path d="M 220 70 L 280 50" class="svg-arrow-light" marker-end="url(#arrow-light)"/>
+    <path d="M 220 130 L 280 115" class="svg-arrow-light" marker-end="url(#arrow-light)"/>
+    <path d="M 220 185 L 280 180" class="svg-arrow-light" marker-end="url(#arrow-light)"/>
+    <path d="M 220 245 L 280 245" class="svg-arrow-light" marker-end="url(#arrow-light)"/>
+
+    <!-- Right side: unified password field + CH -->
+    <rect x="580" y="80" width="280" height="100" rx="10" class="svg-box-fill-ch" stroke-width="1.5"/>
+    <text x="720" y="108" text-anchor="middle" class="svg-label">ClickHouse</text>
+    <text x="720" y="128" text-anchor="middle" class="svg-tiny">user = email · password = JWT</text>
+    <text x="720" y="148" text-anchor="middle" class="svg-tiny">native JWT (Antalya) or sidecar (OSS)</text>
+    <text x="720" y="168" text-anchor="middle" class="svg-tiny" style="font-weight:600">one auth model · one audit trail</text>
+
+    <!-- Client to CH arrows -->
+    <path d="M 500 50 L 580 105" class="svg-arrow" marker-end="url(#arrow)"/>
+    <path d="M 500 115 L 580 120" class="svg-arrow" marker-end="url(#arrow)"/>
+    <path d="M 500 180 L 580 135" class="svg-arrow" marker-end="url(#arrow)"/>
+    <path d="M 500 245 L 580 155" class="svg-arrow" marker-end="url(#arrow)"/>
+    <path d="M 500 310 L 580 175" class="svg-arrow" marker-end="url(#arrow)"/>
+
+    <text x="540" y="225" class="svg-tiny" style="font-style:italic">JWT as password</text>
+  </svg>
+  <figcaption>Figure 4 — Client convergence. The token-helper CLI is the single biggest leverage point: it handles OAuth once, every client picks up the resulting JWT via their existing username/password code path. ClickHouse sees one model.</figcaption>
+</figure>
+
+<h3>6.1 Per-client breakdown</h3>
+
+<table>
+  <thead>
+    <tr><th>Client</th><th>Patch needed</th><th>Mechanism</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>clickhouse-connect</code> (Python)</td>
+      <td>None</td>
+      <td>Companion library calls helper or runs OAuth in-process; passes JWT to driver</td>
+    </tr>
+    <tr>
+      <td><code>clickhouse-driver</code> (Python)</td>
+      <td>None</td>
+      <td>Same companion library</td>
+    </tr>
+    <tr>
+      <td>ClickHouse JDBC</td>
+      <td>Optional auth-provider extension</td>
+      <td>Helper-CLI + file-on-disk works today; driver extension is the long-term polish</td>
+    </tr>
+    <tr>
+      <td>DBeaver / DataGrip</td>
+      <td>None</td>
+      <td>Inherits JDBC; "external command" password field reads from helper</td>
+    </tr>
+    <tr>
+      <td><code>clickhouse-client</code> CLI</td>
+      <td>None</td>
+      <td><code>--password "$(bentoclick token)"</code></td>
+    </tr>
+    <tr>
+      <td>Superset</td>
+      <td>Light SQLAlchemy auth callback</td>
+      <td>Service identity via client_credentials grant; one JWT, one narrow CH role</td>
+    </tr>
+    <tr>
+      <td>Grafana</td>
+      <td>Datasource plugin config</td>
+      <td>Same service-identity pattern as Superset</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout note">
+  <strong>The only structurally important patch</strong> is the JDBC auth-provider extension.
+  Everything else is a thin glue library or a deployment-time configuration choice.
+</div>
+
+<h3>6.2 Picking the role on direct-client calls</h3>
+
+<p>
+  CH's HTTP handler reads <code>?role=</code> (verified in
+  <code>HTTPHandler.cpp:236-238</code>). The question per client is whether the driver
+  exposes a way to set that URL parameter cleanly. This needs implementation testing
+  per driver, not aspirational examples. Honest current status:
+</p>
+
+<table>
+  <thead><tr><th>Client</th><th>Mechanism (needs verification)</th><th>Risk</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>HTTP-mode JDBC URL</td>
+      <td>Append <code>&amp;role=...</code> to JDBC URL; HTTP-mode driver should forward as query param</td>
+      <td>Needs driver test; some JDBC drivers reserve known param names and may eat <code>role</code></td>
+    </tr>
+    <tr>
+      <td><code>clickhouse-connect</code> (Python, HTTP-only)</td>
+      <td>Pass through driver's <code>http_params</code> / <code>query_params</code> mechanism; <strong>not</strong> via <code>settings={}</code> (no <code>role</code> setting exists)</td>
+      <td>Earlier draft was wrong — verify the right API in the driver</td>
+    </tr>
+    <tr>
+      <td><code>clickhouse-client</code> CLI</td>
+      <td>Native protocol — <code>--param_role</code> sets a SQL parameter named <code>role</code>, <strong>not</strong> the CH role. Use <code>SET ROLE 'name'</code> in a startup SQL, or HTTP mode</td>
+      <td>Earlier draft was wrong</td>
+    </tr>
+    <tr>
+      <td><code>clickhouse-driver</code> (Python, native)</td>
+      <td>Execute <code>SET ROLE 'name'</code> after connect; document pool gotcha</td>
+      <td>Pool reuse without re-SET leaks role across logical sessions</td>
+    </tr>
+    <tr>
+      <td>SPA <code>fetch()</code></td>
+      <td>Append <code>?role=...</code> to URL; standard</td>
+      <td>Low — URL-building is direct</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout warn">
+  <strong>Implementation status: needs per-driver test pass.</strong> Earlier sketches in
+  this doc asserted driver behavior that was wrong (<code>--param_role</code>,
+  <code>settings={"role":...}</code>). The corrected position: only the HTTP-mode SPA
+  fetch path is known to work. Every other client needs a small integration test against
+  a real CH instance before being recommended.
+</div>
+
+<p>
+  CH RBAC bounds whatever the client asks for. A human who picks a role they aren't
+  granted gets <code>access_denied</code> from CH, not a security incident.
+</p>
+
+<h3>6.3 Token refresh during long-lived sessions</h3>
+
+<ul>
+  <li><strong>HTTP protocol</strong>: each query is a fresh authentication. The helper rotates the JWT between queries.</li>
+  <li><strong>Native protocol</strong>: connection-level auth. Open connections survive token expiry; reconnects need a fresh JWT.</li>
+  <li><strong>JDBC connection pools</strong> that cache the password at pool init are the footgun. The auth-provider extension fixes it; until then, document the pool config gotcha (short pool TTL or auth-on-checkout).</li>
+</ul>
+
+<h2 id="storage">7. Storage model</h2>
+
+<p>
+  All gateway state lives in a dedicated control-plane ClickHouse with Keeper.
+  Engine choice tracks the consistency requirement.
+</p>
+
+<figure>
+  <svg viewBox="0 0 900 360" width="900" role="img" aria-label="Storage model">
+    <!-- Control-plane CH -->
+    <rect x="60" y="40" width="780" height="220" rx="12" stroke="#ccc" fill="#fff" stroke-width="1.5"/>
+    <text x="450" y="64" text-anchor="middle" class="svg-label">Control-plane ClickHouse</text>
+
+    <!-- MergeTree group -->
+    <rect x="90" y="90" width="350" height="150" rx="10" class="svg-box-fill-ch" stroke-width="1.2"/>
+    <text x="265" y="114" text-anchor="middle" class="svg-label">Replicated MergeTree</text>
+    <text x="265" y="132" text-anchor="middle" class="svg-tiny">append-only · CH replication handles HA</text>
+    <line x1="105" y1="148" x2="425" y2="148" stroke="#ccc"/>
+    <text x="265" y="170" text-anchor="middle" class="svg-sub">dashboard_versions</text>
+    <text x="265" y="195" text-anchor="middle" class="svg-sub">audit_events</text>
+    <text x="265" y="220" text-anchor="middle" class="svg-sub">runtime_artifacts</text>
+
+    <!-- KeeperMap group -->
+    <rect x="470" y="90" width="350" height="150" rx="10" class="svg-box-fill-storage" stroke-width="1.2"/>
+    <text x="645" y="114" text-anchor="middle" class="svg-label">KeeperMap</text>
+    <text x="645" y="132" text-anchor="middle" class="svg-tiny">transactional · immediate cross-replica visibility</text>
+    <line x1="485" y1="148" x2="805" y2="148" stroke="#ccc"/>
+    <text x="645" y="170" text-anchor="middle" class="svg-sub">dashboards_drafts · shares</text>
+    <text x="645" y="195" text-anchor="middle" class="svg-sub">published_dashboards</text>
+    <text x="645" y="220" text-anchor="middle" class="svg-sub">leader_locks</text>
+
+    <!-- Keeper ensemble below -->
+    <rect x="320" y="290" width="260" height="50" rx="8" class="svg-box-fill-as" stroke-width="1.5"/>
+    <text x="450" y="313" text-anchor="middle" class="svg-label">Keeper ensemble</text>
+    <text x="450" y="331" text-anchor="middle" class="svg-tiny">already part of CH deployment</text>
+
+    <!-- KeeperMap → Keeper -->
+    <path d="M 645 240 L 510 290" class="svg-arrow-light" marker-end="url(#arrow-light)"/>
+    <text x="600" y="275" class="svg-tiny" style="fill:#666">backed by</text>
+  </svg>
+  <figcaption>Figure 5 — Storage model. One ClickHouse deployment, two engines for two consistency needs. KeeperMap entries appear instantly on every CH replica; MergeTree entries replicate via CH's normal path. No separate Keeper client library.</figcaption>
+</figure>
+
+<div class="callout warn">
+  <strong>EmbeddedRocksDB is not used.</strong> It is a server-local engine that does not replicate
+  across CH replicas — drafts written on one replica would not appear on another. KeeperMap fits
+  the same point-lookup + UPSERT shape and replicates correctly. (Same concern #106 raised for
+  refresh-state.)
+</div>
+
+<h3>7.1 Schema</h3>
+
+<pre><code>-- Drafts: mutable, point lookup, replicated via Keeper.
+CREATE TABLE dashboards_drafts (
+  dashboard_id  String,
+  owner_user_id String,
+  org_id        String DEFAULT 'default',  -- reserved for v1.x tenancy
+  name          String,
+  description   String,
+  spec_json     String,
+  updated_at    DateTime64(3),
+  deleted_at    Nullable(DateTime64(3))
+) ENGINE = KeeperMap('/bentoclick/drafts')
+PRIMARY KEY dashboard_id;
+
+-- Versions: append-only history. Audit / "show me past versions" only.
+-- Eventually consistent across CH replicas (ReplicatedMergeTree replication is async).
+-- Readers never join from published_dashboards into this table on the hot path.
+CREATE TABLE dashboard_versions (
+  version_id       String,
+  dashboard_id     String,
+  version_number   UInt64,
+  spec_json        String,
+  runtime_version  String,
+  created_by       String,
+  org_id           String DEFAULT 'default',  -- reserved for v1.x tenancy
+  created_at       DateTime64(3)
+) ENGINE = ReplicatedMergeTree
+ORDER BY (dashboard_id, version_number);
+
+-- Published state: full current spec, atomic via KeeperMap.
+-- This is the source of truth for "render this dashboard now."
+-- Eliminates the publish-atomicity race between MergeTree + KeeperMap.
+CREATE TABLE published_dashboards (
+  dashboard_id        String,
+  current_version_id  String,            -- references dashboard_versions (audit link)
+  spec_json           String,            -- full current spec, denormalized for atomic read
+  runtime_version     String,
+  owner_user_id       String,
+  org_id              String DEFAULT 'default',
+  updated_at          DateTime64(3)
+) ENGINE = KeeperMap('/bentoclick/published')
+PRIMARY KEY dashboard_id;
+
+-- Shares: needs immediate revocation visibility.
+-- Distinguishes three things that were previously conflated:
+--   pinned_version_id    : which dashboard spec the recipient sees
+--   data_mode            : snapshot | live | live_authenticated
+--   identity_mode        : recipient_auth | owner_credential | service_identity
+CREATE TABLE shares (
+  share_id          String,
+  dashboard_id      String,
+  org_id            String DEFAULT 'default',
+  pinned_version_id Nullable(String),               -- spec frozen at share-creation
+  data_mode         Enum8('snapshot'=1,             -- query results frozen at share-creation (default)
+                          'live'=2,                  -- live queries, recipient must auth
+                          'live_authenticated'=3),   -- live queries via owner's stored credential
+  identity_mode     Enum8('recipient_auth'=1,
+                          'owner_credential'=2,
+                          'service_identity'=3),
+  owner_user_id     String,
+  token_hash        String,
+  snapshot_ref      Nullable(String),               -- pointer to snapshot rows if data_mode=snapshot
+  created_at        DateTime64(3),
+  revoked_at        Nullable(DateTime64(3)),
+  expires_at        Nullable(DateTime64(3)),
+  last_used_at      Nullable(DateTime64(3)),
+  label             Nullable(String)
+) ENGINE = KeeperMap('/bentoclick/shares')
+PRIMARY KEY share_id;
+
+-- Snapshot data for shares whose data_mode='snapshot'.
+-- One row per panel per snapshot. Results inlined as JSON.
+-- Size bounds enforced at snapshot time (max rows × panels × byte cap).
+CREATE TABLE share_snapshots (
+  snapshot_ref   String,
+  panel_id       String,
+  result_json    String,
+  rendered_at    DateTime64(3),
+  expires_at     Nullable(DateTime64(3))
+) ENGINE = ReplicatedMergeTree
+PARTITION BY toYYYYMMDD(rendered_at)
+ORDER BY (snapshot_ref, panel_id);
+
+-- Runtime artifact registry.
+CREATE TABLE runtime_artifacts (
+  version            String,
+  path               String,
+  manifest_json      String,
+  available_on_nodes Array(String),
+  created_at         DateTime64(3),
+  disabled_at        Nullable(DateTime64(3))
+) ENGINE = ReplicatedReplacingMergeTree(created_at)
+ORDER BY version;
+
+-- Audit: high-volume append-only, partitioned by day.
+CREATE TABLE audit_events (
+  event_id      String,
+  actor_user_id String,
+  event_type    LowCardinality(String),
+  target_type   LowCardinality(String),
+  target_id     String,
+  metadata_json String,
+  request_id    Nullable(String),
+  created_at    DateTime64(3)
+) ENGINE = ReplicatedMergeTree
+PARTITION BY toYYYYMMDD(created_at)
+ORDER BY (created_at, event_type);
+
+-- Distributed leader locks (artifact GC, audit compaction).
+CREATE TABLE leader_locks (
+  lock_name    String,
+  holder_node  String,
+  acquired_at  DateTime64(3),
+  expires_at   DateTime64(3)
+) ENGINE = KeeperMap('/bentoclick/locks')
+PRIMARY KEY lock_name;</code></pre>
+
+<h2 id="rendering">8. Dashboard rendering path</h2>
+
+<p>
+  Who actually executes the SQL behind a rendered dashboard? Three real options, used
+  in different combinations depending on viewer type. This is the most consequential
+  open architectural decision in v0.2 and worth surfacing explicitly.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Option</th><th>Owner viewing own dashboard</th><th>Share recipient</th><th>Major costs</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>A. Browser → CH directly</strong></td>
+      <td>SPA holds owner's <code>aud=ch:cluster-N</code> JWT; queries each panel via fetch</td>
+      <td>Recipient may have no CH identity — broken unless they log in to AS and have CH grants</td>
+      <td>CORS on every customer CH · CH endpoint discoverable from browser · JWT in browser memory (XSS = CH access) · private-network CH unreachable from recipient's browser</td>
+    </tr>
+    <tr>
+      <td><strong>B. BentoClick proxies live queries</strong></td>
+      <td>BentoClick on path, uses owner's JWT to upstream CH</td>
+      <td>BentoClick uses owner's stored credential, service identity, or recipient's JWT depending on identity_mode</td>
+      <td>Streaming HTTP proxy reappears with full conn-pool/cancellation/backpressure surface (the 1500-LOC concern) · per-user CH audit weakens when service identity is used</td>
+    </tr>
+    <tr>
+      <td><strong>C. Snapshot at share-creation</strong></td>
+      <td>(Owner uses A or B for live editing — snapshot is irrelevant for owner)</td>
+      <td>BentoClick executes panels once at share time; results stored in <code>share_snapshots</code>; recipient sees frozen data</td>
+      <td>Snapshot storage with size caps · "live data" lost (often a feature for shares)</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>8.1 v0.2 default policy</h3>
+
+<ul>
+  <li><strong>Owner viewing own dashboard</strong>: option A. Owner's browser holds owner's <code>aud=ch:cluster-N</code> JWT; SPA queries CH directly. CORS configured at deployment time per cluster.</li>
+  <li><strong>Share recipient — default</strong>: option C. Default <code>data_mode='snapshot'</code>. Recipient sees frozen results, no live query, no CH identity required. This is how most BI sharing already works (Tableau Public, Looker Studio).</li>
+  <li><strong>Share recipient — live, opt-in</strong>: option B with <code>data_mode='live'</code> and <code>identity_mode='recipient_auth'</code>. Recipient must authenticate via AS; BentoClick proxies the recipient's JWT to CH. We pay the streaming-proxy LOC cost here because neither A (no CH identity at recipient) nor C (live needed) fits.</li>
+  <li><strong>Share recipient — live with owner credential</strong>: option B with <code>identity_mode='owner_credential'</code>. Disabled by default; requires explicit deployment-config opt-in because it breaks per-user audit (CH sees owner identity for all queries).</li>
+</ul>
+
+<div class="callout warn">
+  <strong>The streaming-proxy code reappears for live shares.</strong> The earlier "sidecar
+  is &lt;300 LOC" argument applies only to <em>authentication</em>. Live share rendering
+  needs an HTTP proxy in BentoClick with connection pooling, streaming, cancellation,
+  backpressure. Confined to that single feature, not a general data-plane proxy.
+</div>
+
+<h3>8.2 Browser → CH direct: deployment requirements</h3>
+
+<ul>
+  <li>Each CH cluster's HTTP endpoint must allow CORS for the BentoClick SPA origin.</li>
+  <li>CH endpoints must be reachable from the user's browser (public IPs or VPN/zero-trust).</li>
+  <li>SPA discovers CH endpoint URLs via BentoClick's connection metadata API.</li>
+  <li>JWT TTL kept short (≤1h) to bound XSS-stolen-token reuse.</li>
+  <li>CSP forbids inline script, eval, untrusted URL schemes.</li>
+</ul>
+
+<h2 id="lifecycle">9. Dashboard lifecycle</h2>
+
+<table>
+  <thead><tr><th>Phase</th><th>Where</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>Draft</td><td><code>dashboards_drafts</code> (KeeperMap)</td><td>Mutable, owner-scoped. LLM agents may write via MCP.</td></tr>
+    <tr><td>Validate</td><td>In process</td><td>Schema + panel-type checks. Optional <code>EXPLAIN</code> through viewer's CH identity.</td></tr>
+    <tr><td>Preview</td><td>In process</td><td>Owner-only. No public share link.</td></tr>
+    <tr><td>Publish</td><td><code>dashboard_versions</code> + <code>published_dashboards</code></td><td>Append-only version row + atomic pointer update.</td></tr>
+    <tr><td>Share</td><td><code>shares</code> (KeeperMap) + <code>share_snapshots</code> (MergeTree) when <code>data_mode='snapshot'</code></td><td>Three orthogonal axes: pinned spec · data mode (snapshot / live / live_authenticated) · identity mode. Default: pinned + snapshot + recipient_auth. Revocable.</td></tr>
+  </tbody>
+</table>
+
+<div class="callout">
+  <strong>Share-link semantics — three independent axes</strong>:
+  <ul>
+    <li><strong>Pinned spec</strong> (<code>pinned_version_id</code>): which dashboard <em>definition</em> the recipient sees. Pinned by default; "follow latest" is opt-in.</li>
+    <li><strong>Data mode</strong> (<code>data_mode</code>): <code>snapshot</code> (frozen results at share time, default), <code>live</code> (recipient-authenticated live query), or <code>live_authenticated</code> (owner-credential live query, deployment opt-in).</li>
+    <li><strong>Identity mode</strong> (<code>identity_mode</code>): which credential executes any live queries — <code>recipient_auth</code>, <code>owner_credential</code>, or <code>service_identity</code>.</li>
+  </ul>
+  Pinned spec alone is <em>not enough</em> to make a share safe — a later publish doesn't change the spec the recipient sees, but new rows landing in CH still affect live queries. <code>data_mode='snapshot'</code> is the only mode that fully freezes what the recipient observes.
+</div>
+
+<h2 id="sanitize">10. Sanitization &amp; validation</h2>
+
+<p>
+  The v0.1 SECURITY DEFINER materialized view chokepoint is reimplemented in Go as
+  <code>pkg/dashboards/sanitize.go</code>. There is exactly one write path for specs.
+  No admin override. No MCP back door. The 90% test-coverage gate already in CLAUDE.md
+  applies here.
+</p>
+
+<h3>10.1 Validation without execution</h3>
+
+<ul>
+  <li>JSON schema check against versioned <code>spec_version</code>.</li>
+  <li>Required-field and panel-type constraint checks.</li>
+  <li>Runtime-compatibility check (spec matches declared <code>runtime_version</code>).</li>
+  <li>Optional <code>EXPLAIN</code> through viewer's CH identity — catches broken SQL pre-publish without leaking schema access beyond what the user already has.</li>
+</ul>
+
+<h3>10.2 SPA renderer posture (defense in depth)</h3>
+
+<p>
+  The sanitizer at write time is the canonical safety boundary, but renderers are
+  <strong>not</strong> permitted to do unsafe things even with sanitized input:
+</p>
+
+<ul>
+  <li>No <code>innerHTML</code> of arbitrary spec content. Use <code>textContent</code> for strings.</li>
+  <li>No <code>javascript:</code> or <code>data:</code> URL schemes from spec — validate against an allowlist (<code>https:</code>, <code>http:</code> optionally, <code>mailto:</code>).</li>
+  <li>No arbitrary <code>&lt;script&gt;</code>, <code>&lt;iframe src=...&gt;</code>, or event-handler attributes from spec content.</li>
+  <li>No <code>eval</code> or <code>new Function()</code> on spec content.</li>
+  <li>Markdown rendering, if any, goes through a sanitizing markdown library (no raw HTML pass-through).</li>
+</ul>
+
+<p>
+  Strict CSP enforced at the SPA origin: <code>script-src 'self'</code>, no
+  <code>'unsafe-inline'</code>, no <code>'unsafe-eval'</code>, restricted
+  <code>connect-src</code> for CH endpoints. This way even a renderer bug that
+  echoes injected content cannot execute it.
+</p>
+
+<p>
+  The principle is "one canonical sanitizer at write time, defense-in-depth at render
+  time." The renderer never relies on sanitization alone — sanitization is the floor,
+  not the ceiling.
+</p>
+
+<h2 id="mcp">11. MCP additions</h2>
+
+<p>
+  altinity-mcp's existing tool surface (<code>execute_query</code>, <code>list_databases</code>,
+  <code>list_tables</code>, <code>describe_table</code>, schema discovery, dynamic tools from
+  views/tables) is preserved unchanged. BentoClick adds a dashboard tool family.
+</p>
+
+<pre><code>dashboard_list
+dashboard_read
+dashboard_create
+dashboard_update
+dashboard_delete
+dashboard_validate
+dashboard_preview
+dashboard_publish</code></pre>
+
+<p>Later, conditional on demand: <code>dashboard_share_create</code>, <code>dashboard_share_revoke</code>, <code>dashboard_runtime_list</code>, <code>dashboard_clone</code>.</p>
+
+<p>
+  Scope gating follows #107's pattern. Suggested verbs:
+  <code>bentoclick:dashboard:read</code> and <code>bentoclick:dashboard:write</code>.
+  Advertised in <code>scopes_supported</code> only when explicitly enabled per deployment.
+</p>
+
+<h2 id="http">12. HTTP API</h2>
+
+<h3>11.1 User API (new)</h3>
+<pre><code>GET    /api/me
+GET    /api/dashboards
+POST   /api/dashboards
+GET    /api/dashboards/{dashboard_id}
+PUT    /api/dashboards/{dashboard_id}
+DELETE /api/dashboards/{dashboard_id}
+POST   /api/dashboards/{dashboard_id}/validate
+POST   /api/dashboards/{dashboard_id}/preview
+POST   /api/dashboards/{dashboard_id}/publish
+POST   /api/dashboards/{dashboard_id}/shares
+GET    /api/dashboards/{dashboard_id}/shares
+DELETE /api/dashboards/{dashboard_id}/shares/{share_id}</code></pre>
+
+<h3>11.2 Runtime serving (new)</h3>
+<pre><code>GET /d/{dashboard_id}
+GET /s/{share_token}
+GET /runtime/{runtime_version}/index.html
+GET /runtime/{runtime_version}/assets/{asset}</code></pre>
+
+<h3>11.3 MCP endpoint, OAuth resource metadata</h3>
+<p>Inherited from altinity-mcp. No change.</p>
+
+<h3>11.4 Admin API (new)</h3>
+<pre><code>GET    /admin/api/health
+GET    /admin/api/nodes
+GET    /admin/api/control-clickhouse/status
+GET    /admin/api/artifacts
+POST   /admin/api/artifacts
+DELETE /admin/api/artifacts/{version}
+GET    /admin/api/clickhouse-connections
+POST   /admin/api/clickhouse-connections
+PUT    /admin/api/clickhouse-connections/{connection_id}
+DELETE /admin/api/clickhouse-connections/{connection_id}
+GET    /admin/api/audit</code></pre>
+
+<h2 id="ha">13. HA validation chain</h2>
+
+<p>
+  BentoClick replicas are stateless per-request. Any replica can serve any request.
+  Sticky sessions are not required.
+</p>
+
+<table>
+  <thead><tr><th>State</th><th>Where</th><th>How HA works</th></tr></thead>
+  <tbody>
+    <tr><td>AS public keys</td><td>Per-replica memory cache</td><td>TTL refresh against AS JWKS; all replicas converge on AS's published keys</td></tr>
+    <tr><td>User identity</td><td>JWT claims</td><td>Each request self-describing; no shared state needed</td></tr>
+    <tr><td>Role allowlist</td><td><code>altinity.mcp_role_metadata</code> (control-plane CH)</td><td>All replicas read same CH</td></tr>
+    <tr><td>Dashboard versions, audit, artifacts</td><td>Replicated MergeTree</td><td>CH replication</td></tr>
+    <tr><td>Drafts, shares, published pointer, locks</td><td>KeeperMap</td><td>Keeper replication; immediate cross-replica visibility</td></tr>
+    <tr><td>Audit witness</td><td>External append-only sink</td><td>Sink owns durability</td></tr>
+  </tbody>
+</table>
+
+<div class="callout note">
+  <strong>JWE-to-random-replica is a non-question in v1.</strong> BentoClick does not issue JWEs.
+  The external AS issues signed JWTs; any replica validates them by public-key crypto against
+  the AS's JWKS. No shared secret on the BentoClick side, no cross-replica coordination.
+  The dormant JWE machinery in <code>pkg/jwe_auth/</code> would become relevant only if
+  BentoClick re-enters AS territory (v2/v3 per the v1-scope notes on #106/#107). At that point
+  HA would require shared JWE key material loaded from deployment config or KeeperMap with
+  <code>kid</code>-keyed lookup.
+</div>
+
+<h2 id="threat">14. Threat model &amp; residual risk</h2>
+
+<h3>13.1 In scope</h3>
+
+<ul>
+  <li>Anonymous access — rejected (resource-server gates everything).</li>
+  <li>AS-issued JWT tampering — rejected (signature + audience check).</li>
+  <li>XSS in the SPA — short JWT TTLs, strict CSP (no <code>'unsafe-inline'</code>, no <code>eval</code>), sanitization at one boundary, defense-in-depth in renderers (no <code>innerHTML</code> of spec content, URL scheme allowlist). The browser-direct-to-CH rendering path (§8) does mean an XSS in the SPA exposes the user's <code>aud=ch:cluster-N</code> JWT — accept this risk with short TTLs and strict CSP, do not enable bypass-mode features that lengthen TTL.</li>
+  <li>Confused-deputy via DCR'd client — addressed by altinity-mcp's consent screen (#107).</li>
+  <li>Refresh-token theft — owned by the external AS.</li>
+  <li>Share-link leakage — revocable (KeeperMap immediate-revoke), optional expiry, optional recipient authentication.</li>
+  <li>Network attacker against the sidecar — sidecar listens on unix socket or loopback only; outbound restricted to AS JWKS host.</li>
+</ul>
+
+<h3>13.2 Out of scope</h3>
+
+<ul>
+  <li>DoS against BentoClick, the AS, the sidecar, or CH.</li>
+  <li>External AS compromise.</li>
+  <li>Side-channel attacks on host.</li>
+  <li>Compromise of the customer's CH RBAC configuration.</li>
+</ul>
+
+<h3>13.3 Residual risk — on-box compromise</h3>
+
+<table>
+  <thead><tr><th>Component compromised</th><th>What attacker can do</th><th>What they cannot do</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>BentoClick node</td>
+      <td>Read drafts/specs in memory; replay JWTs observed in transit (TLS limits this)</td>
+      <td>Mint tokens · forge identities to CH · impersonate inactive users</td>
+    </tr>
+    <tr>
+      <td>Sidecar process</td>
+      <td>Return 200 for forged tokens it sees · return permissive <code>settings</code> in the JSON body</td>
+      <td>Originate impersonated queries (if network rules block sidecar→CH initiation) · forge tokens accepted by other validators (BentoClick's own resource-server) · grant roles the user isn't actually granted (roles come from URL + CH RBAC, not from the sidecar response)</td>
+    </tr>
+    <tr>
+      <td>External AS</td>
+      <td>Issue tokens for any user</td>
+      <td>(out of scope)</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>This is meaningfully smaller than a design where BentoClick mints data-plane tokens.</p>
+
+<h3>13.4 Layered mitigations</h3>
+
+<ol>
+  <li>CH-side <code>&lt;networks&gt;</code> per user — even valid impersonation attempts are rejected from outside known CIDRs.</li>
+  <li>Role-metadata whitelist + <code>DEFAULT ROLE NONE</code> + no-direct-grants — privilege ceiling is operator-curated, not gateway-controlled.</li>
+  <li>Out-of-band audit witness — every sidecar 200 also writes to an append-only sink the sidecar cannot mutate after writing. Detection, not prevention; bounds dwell time.</li>
+  <li>Short AS-issued JWT TTLs — ≤ 1h, with rotation.</li>
+</ol>
+
+<h2 id="deploy">15. Deployment shape</h2>
+
+<figure>
+  <svg viewBox="0 0 900 460" width="900" role="img" aria-label="Deployment topology">
+    <!-- External AS -->
+    <rect x="40" y="40" width="180" height="60" rx="8" class="svg-box-fill-as" stroke-width="1.5"/>
+    <text x="130" y="68" text-anchor="middle" class="svg-label">Authorization Server</text>
+    <text x="130" y="84" text-anchor="middle" class="svg-tiny">Auth0 / Keycloak / Rauthy</text>
+
+    <!-- BentoClick replicas -->
+    <rect x="280" y="30" width="340" height="80" rx="10" class="svg-box-fill-bentoclick" stroke-width="1.5"/>
+    <text x="450" y="52" text-anchor="middle" class="svg-label">BentoClick replicas (3x)</text>
+    <text x="450" y="68" text-anchor="middle" class="svg-tiny">Go binary · stateless · LB-fronted</text>
+    <rect x="310" y="80" width="80" height="20" rx="4" fill="#fff" stroke="#4a5fc1"/>
+    <text x="350" y="94" text-anchor="middle" class="svg-tiny">replica-1</text>
+    <rect x="410" y="80" width="80" height="20" rx="4" fill="#fff" stroke="#4a5fc1"/>
+    <text x="450" y="94" text-anchor="middle" class="svg-tiny">replica-2</text>
+    <rect x="510" y="80" width="80" height="20" rx="4" fill="#fff" stroke="#4a5fc1"/>
+    <text x="550" y="94" text-anchor="middle" class="svg-tiny">replica-3</text>
+
+    <!-- Control plane CH+Keeper -->
+    <rect x="280" y="150" width="340" height="100" rx="10" stroke="#ccc" fill="#fff" stroke-width="1.5"/>
+    <text x="450" y="172" text-anchor="middle" class="svg-label">Control-plane CH + Keeper</text>
+    <rect x="310" y="190" width="120" height="50" rx="6" class="svg-box-fill-ch" stroke-width="1"/>
+    <text x="370" y="208" text-anchor="middle" class="svg-tiny" style="font-weight:600">3x CH replica</text>
+    <text x="370" y="224" text-anchor="middle" class="svg-tiny">MergeTree · KeeperMap</text>
+    <rect x="450" y="190" width="160" height="50" rx="6" class="svg-box-fill-as" stroke-width="1"/>
+    <text x="530" y="208" text-anchor="middle" class="svg-tiny" style="font-weight:600">3x Keeper</text>
+    <text x="530" y="224" text-anchor="middle" class="svg-tiny">co-deployed with CH</text>
+
+    <!-- Audit witness -->
+    <rect x="680" y="160" width="180" height="80" rx="10" class="svg-box-fill-storage" stroke-width="1.5"/>
+    <text x="770" y="186" text-anchor="middle" class="svg-label">Audit witness sink</text>
+    <text x="770" y="204" text-anchor="middle" class="svg-tiny">object-store w/ object-lock</text>
+    <text x="770" y="222" text-anchor="middle" class="svg-tiny">or separate Keeper namespace</text>
+
+    <!-- Customer CH clusters -->
+    <rect x="40" y="300" width="820" height="130" rx="10" stroke="#ccc" fill="#fff" stroke-width="1.5"/>
+    <text x="450" y="322" text-anchor="middle" class="svg-label">Customer ClickHouse fleet (data plane)</text>
+
+    <g>
+      <rect x="60" y="340" width="240" height="70" rx="8" class="svg-box-fill-ch" stroke-width="1.2"/>
+      <text x="180" y="362" text-anchor="middle" class="svg-tiny" style="font-weight:600">Cluster A · OSS</text>
+      <rect x="80" y="372" width="200" height="28" rx="4" class="svg-box-fill-sidecar" stroke-width="1"/>
+      <text x="180" y="390" text-anchor="middle" class="svg-tiny">JWT verifier sidecar</text>
+    </g>
+    <g>
+      <rect x="330" y="340" width="240" height="70" rx="8" class="svg-box-fill-ch" stroke-width="1.2"/>
+      <text x="450" y="362" text-anchor="middle" class="svg-tiny" style="font-weight:600">Cluster B · Antalya</text>
+      <text x="450" y="388" text-anchor="middle" class="svg-tiny">native JWT validation · no sidecar</text>
+    </g>
+    <g>
+      <rect x="600" y="340" width="240" height="70" rx="8" class="svg-box-fill-ch" stroke-width="1.2"/>
+      <text x="720" y="362" text-anchor="middle" class="svg-tiny" style="font-weight:600">Cluster C · OSS</text>
+      <rect x="620" y="372" width="200" height="28" rx="4" class="svg-box-fill-sidecar" stroke-width="1"/>
+      <text x="720" y="390" text-anchor="middle" class="svg-tiny">JWT verifier sidecar</text>
+    </g>
+
+    <!-- Connections -->
+    <path d="M 220 90 L 280 90" class="svg-arrow"/>
+    <text x="248" y="80" text-anchor="middle" class="svg-tiny">JWKS</text>
+
+    <path d="M 450 110 L 450 150" class="svg-arrow"/>
+    <text x="465" y="135" class="svg-tiny">control-plane state</text>
+
+    <path d="M 620 90 L 770 160" class="svg-arrow"/>
+    <text x="720" y="125" class="svg-tiny">audit witness writes</text>
+
+    <!-- No arrows from BentoClick to customer CH (data path doesn't go through BentoClick) -->
+    <text x="450" y="450" text-anchor="middle" class="svg-tiny" style="font-style:italic; fill:#999">data-plane queries flow client ↔ CH directly, not shown above</text>
+  </svg>
+  <figcaption>Figure 6 — Deployment topology. BentoClick replicas talk to the control-plane CH + Keeper for state and to the audit-witness sink for tamper-evident impersonation logging. Customer CH clusters are reached by clients directly with their JWT; OSS clusters host a sidecar, Antalya clusters validate natively.</figcaption>
+</figure>
+
+<h2 id="migrate">16. Migration from altinity-mcp</h2>
+
+<p>Existing altinity-mcp deployments upgrade by:</p>
+
+<ol>
+  <li>Bumping to the BentoClick-branded binary (same Go module tree, new packages enabled).</li>
+  <li>Adding control-plane CH configuration (separate from customer CH connections).</li>
+  <li>Running BentoClick schema migrations against the control-plane CH.</li>
+  <li>Optionally enabling the dashboard surface via <code>bentoclick.dashboards.enabled=true</code> (off by default for pure-MCP deployments).</li>
+  <li>Optionally deploying the JWT verifier sidecar alongside customer OSS CH clusters that should switch to AS-validated JWT auth.</li>
+</ol>
+
+<p>
+  The existing MCP tool surface, OAuth resource-server config, cluster_secret flow (for
+  deployments that keep it), and role-metadata table are unchanged. A pure-MCP deployment
+  that never enables the dashboard surface remains functionally identical to today's altinity-mcp.
+</p>
+
+<h2 id="milestones">17. Implementation milestones</h2>
+
+<table>
+  <thead><tr><th>#</th><th>Milestone</th><th>Deliverable</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Control-plane CH foundation</td><td><code>pkg/controlplane</code>: client, migrations runner; initial schema</td></tr>
+    <tr><td>2</td><td>Dashboard storage &amp; sanitize</td><td><code>pkg/dashboards</code>: sanitize, store, validate; KeeperMap drafts, MergeTree versions, KeeperMap published</td></tr>
+    <tr><td>3</td><td>Dashboard HTTP API</td><td><code>/api/dashboards/*</code> + owner-only visibility via JWT identity</td></tr>
+    <tr><td>4</td><td>Preview &amp; EXPLAIN validation</td><td>Optional <code>EXPLAIN</code> preflight through viewer identity</td></tr>
+    <tr><td>5</td><td>Artifact-aware rendering</td><td><code>pkg/artifacts</code> with <code>available_on_nodes</code>; <code>/d/{id}</code></td></tr>
+    <tr><td>6</td><td>Sharing — snapshot mode</td><td>KeeperMap shares + <code>share_snapshots</code> MergeTree; pinned spec + snapshot data + recipient_auth defaults; <code>/s/{token}</code> renders frozen results; size caps enforced</td></tr>
+    <tr><td>6a</td><td>Sharing — live mode (opt-in)</td><td>HTTP streaming proxy in BentoClick for <code>data_mode='live'</code>; conn pool · cancellation · backpressure · per-share rate limits. The one place the streaming-proxy LOC cost is accepted.</td></tr>
+    <tr><td>7</td><td>JWT verifier sidecar</td><td>Standalone binary; config schema; loopback / unix-socket listener; returns JSON <code>settings</code> only</td></tr>
+    <tr><td>7a</td><td>MCP-side role pinning</td><td>HTTP-mode CH client in <code>pkg/clickhouse</code> that builds <code>?role=&lt;consent_role&gt;</code>; agent has no surface to override</td></tr>
+    <tr><td>8</td><td>Token-helper CLI</td><td><code>bentoclick login/token/daemon/logout</code>; <code>token --role(s)</code> output; keyring integration; companion Python lib</td></tr>
+    <tr><td>9</td><td>Dashboard MCP tools</td><td><code>pkg/mcp_dashboard</code>: full CRUD + validate/preview/publish</td></tr>
+    <tr><td>10</td><td>Admin API</td><td>Artifact admin, CH connections, control-plane status, audit browsing</td></tr>
+    <tr><td>11</td><td>Audit witness wiring</td><td>Out-of-band sink for sidecar 200s and any impersonation events</td></tr>
+    <tr><td>12</td><td>JDBC auth-provider extension</td><td>Upstream PR to ClickHouse JDBC driver (long-term polish)</td></tr>
+  </tbody>
+</table>
+
+<h2 id="open">18. Open discussion items</h2>
+
+<ol>
+  <li><strong>Consent-screen role picker</strong> — Auth0 (Actions limited), Keycloak (SPI), Rauthy (small patch). Which AS becomes the reference deployment for v0.2? The AS needs to mint a JWT carrying the picked role as either a <code>groups</code> claim (Antalya native path) or a deployment-specific claim the MCP server reads (OSS path).</li>
+  <li><strong>Expose role selection as an MCP tool argument?</strong> — currently the MCP server pins the consent role and the agent has no choice. Could expose a <code>role: enum [...]</code> tool argument restricted to the consent set, letting agents narrow further (e.g. drop write capability for read-only tasks). Lean: pin in v0.2, expose later if demand surfaces.</li>
+  <li><strong>Native-protocol role binding for Python <code>clickhouse-driver</code></strong> — <code>SET ROLE</code> after connect works but interacts badly with connection pools. Document the gotcha or push users to HTTP-mode clients only?</li>
+  <li><strong>Recipient authentication on share links</strong> — required by default, or allow bearer share links as a connection-level option?</li>
+  <li><strong>Distributed lock TTL handling</strong> — KeeperMap rows don't auto-expire. Heartbeat from holder, or watchdog reaper?</li>
+  <li><strong>EXPLAIN-as-validation policy</strong> — always on publish, only on explicit <code>validate</code>, or per-deployment toggle?</li>
+  <li><strong>Audit-witness sink choice</strong> — object-store with object-lock vs. separate Keeper ensemble. Different recovery and tamper-evidence properties.</li>
+  <li><strong>JDBC token-helper UX</strong> — file-on-disk vs unix-socket helper vs in-driver auth-provider extension as the v0.2 default.</li>
+  <li><strong>Superset / Grafana per-user identity</strong> — accept service-identity for v0.2, defer per-user to a later milestone?</li>
+  <li><strong>Dashboard ownership transfer on user removal</strong> — admin-mediated reassignment vs. orphan-with-flag.</li>
+  <li><strong>Rendering-path policy per share</strong> — defaults in §8.1 are a starting point. May need per-deployment overrides (some operators won't want browser-direct-to-CH at all due to network posture; some won't want snapshot storage due to data sensitivity).</li>
+  <li><strong>Snapshot size and retention caps</strong> — share_snapshots needs hard limits to avoid an attacker creating shares of huge result sets to fill control-plane CH. Bytes-per-snapshot, snapshots-per-dashboard, total-bytes-per-org.</li>
+  <li><strong>Multi-audience token-helper shape</strong> — does the helper proactively refresh all known audiences in the background, or fetch lazily? Lazy is simpler; proactive avoids first-query latency.</li>
+  <li><strong>CORS configuration for browser-direct-to-CH</strong> — operators must allow the BentoClick SPA origin on every customer CH HTTP endpoint. Worth shipping a tested CH config snippet alongside the deployment docs.</li>
+  <li><strong>v1.x tenancy migration plan</strong> — when org/team/folder lands, what does the migration from <code>org_id='default'</code> populated rows look like? Sketch the path now to avoid painful surprises.</li>
+</ol>
+
+<h2 id="refs">19. References</h2>
+
+<ul>
+  <li>altinity-mcp repository: <a href="https://github.com/Altinity/altinity-mcp">github.com/Altinity/altinity-mcp</a></li>
+  <li>PR #110 (merged): "redefine gating mode as pure OAuth resource server" — v1 OAuth posture BentoClick inherits.</li>
+  <li>Issue/PR #106 (closed, deferred v2/v3): refresh-token reuse detection in CH MergeTree.</li>
+  <li>Issue/PR #107 (closed, deferred v2/v3): DCR consent + role binding via <code>WithRoles</code> and <code>altinity.mcp_role_metadata</code>.</li>
+  <li>PR #105 (merged): H-1 — <code>require_email_verified</code> gate.</li>
+  <li>PR #104 (merged): OAuth spec-compliance hardening + HKDF + C-1.</li>
+  <li>Altinity clickhouse-go fork: <code>feature/interserver-extra-roles</code> @ <code>3e22df3</code> — bumps <code>DBMS_TCP_PROTOCOL_VERSION</code> to 54472.</li>
+  <li>BentoClick repository: <a href="https://github.com/BorisTyshkevich/bentoclick">github.com/BorisTyshkevich/bentoclick</a></li>
+  <li>ClickHouse external HTTP authentication: <a href="https://clickhouse.com/docs/operations/external-authenticators/http">clickhouse.com/docs/operations/external-authenticators/http</a></li>
+  <li>ClickHouse <code>KeeperMap</code> engine: in-tree at <code>src/Storages/StorageKeeperMap.cpp</code>.</li>
+  <li>RFC 9728 — Protected Resource Metadata. RFC 8707 — Resource Indicators (audience binding). RFC 7662 — OAuth Token Introspection.</li>
+</ul>
+
+</div>
+</body>
+</html>
