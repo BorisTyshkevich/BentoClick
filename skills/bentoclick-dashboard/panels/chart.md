@@ -1,5 +1,8 @@
 # `chart`
 
+> ❌ Do **not** use `series: [...]` or `series_key` — those belong to `line`.
+> Use `x_key` + `value_key`. Using `series` produces axes with no data rendered and no error message.
+
 Categorical bars with `color_by`, optional horizontal layout, and
 `on_click` cross-panel filtering. Use this when `bars` runs out —
 specifically when you need per-row color from a column, an actual

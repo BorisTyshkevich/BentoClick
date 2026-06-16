@@ -1,5 +1,9 @@
 # `combo`
 
+> ❌ Do **not** use `series: [...]` — `combo` is not a generic chart lib.
+> Use `bars: { key, label, color_by }` + `line: { key, label, axis }`.
+> Using `series` produces axes with no data rendered and no error message.
+
 Bars + line on dual axes. The single most useful shape for an
 analytical dashboard: primary metric as bars (often `color_by` a
 category column), derived metric (delta, ratio, share) as the line

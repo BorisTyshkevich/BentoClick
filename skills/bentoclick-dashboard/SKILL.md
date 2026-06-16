@@ -8,6 +8,12 @@ description: >
 
 # bentoclick-dashboard
 
+> **Mandatory:** Before writing any panel JSON, read `panels/<type>.md` for
+> every panel type you intend to use. Field names are not guessable from
+> generic chart library conventions — `combo` uses `bars:{key}` + `line:{key}`,
+> not `series:[…]`; `chart` uses `value_key`, not `series`. Reading the wrong
+> field name produces a chart that renders axes and nothing else, with no error.
+
 Dashboards are rows in `bentoclick.dashboards`, served at
 `https://<spa-origin>` behind OAuth. The viewer's
 bearer authenticates ClickHouse queries; the dashboard's SQL runs as
@@ -105,20 +111,22 @@ Auto-flow layout: `width: 12` (default) is full-row; consecutive
 `width: 6` pair side-by-side; consecutive `width: 4` triple. No
 nested grids.
 
-| `type` | Use for | Reference |
-|---|---|---|
-| `kpi-strip` | One-row query → tile per measurable | [panels/kpi-strip.md](panels/kpi-strip.md) |
-| `table`     | Sticky-header table, formatters, threshold badges | [panels/table.md](panels/table.md) |
-| `bars`      | Horizontal share bars (quick shortcut) | [panels/bars.md](panels/bars.md) |
-| `chart`     | Categorical bars with `color_by`, vertical or horizontal | [panels/chart.md](panels/chart.md) |
-| `line`      | Time-series / ordered x-axis with one or more series | [panels/line.md](panels/line.md) |
-| `combo`     | Bars + line on dual axes — analytical workhorse | [panels/combo.md](panels/combo.md) |
-| `markdown`  | Narrative text, no query | [panels/markdown.md](panels/markdown.md) |
-| `hero`      | Templated sentence anchored to another panel's first row | [panels/hero.md](panels/hero.md) |
-| `callouts`  | Templated cards anchored to N rows of another panel | [panels/callouts.md](panels/callouts.md) |
-| `html`      | Static markup (sanitized) + optional templated `query` | [panels/html.md](panels/html.md) |
-| `script`    | JS escape hatch — drill-down, third-party libs. Last resort. | [panels/script.md](panels/script.md) |
-| `dataset`   | Headless query; expose rows to other panels via `source` | [panels/dataset.md](panels/dataset.md) |
+| `type` | Use for | Key fields (do NOT guess — read the panel doc) | Reference |
+|---|---|---|---|
+| `kpi-strip` | One-row query → tile per measurable | `tiles:[{key,label,format}]` | [panels/kpi-strip.md](panels/kpi-strip.md) |
+| `table`     | Sticky-header table, formatters, threshold badges | `columns:[{key,label,format,align}]` | [panels/table.md](panels/table.md) |
+| `bars`      | Horizontal share bars (quick shortcut) | `value_key`, `label_key` | [panels/bars.md](panels/bars.md) |
+| `chart`     | Categorical bars with `color_by`, vertical or horizontal | `x_key`, `value_key`, `color_by`, `orientation` — **NOT** `series` | [panels/chart.md](panels/chart.md) |
+| `line`      | Time-series / ordered x-axis with one or more series | read doc — has its own `series` shape | [panels/line.md](panels/line.md) |
+| `combo`     | Bars + line on dual axes — analytical workhorse | `x_key`, `bars:{key,label,color_by}`, `line:{key,label,axis}` — **NOT** `series:[…]` | [panels/combo.md](panels/combo.md) |
+| `markdown`  | Narrative text, no query | `content` | [panels/markdown.md](panels/markdown.md) |
+| `hero`      | Templated sentence anchored to another panel's first row | `source`, `template` | [panels/hero.md](panels/hero.md) |
+| `callouts`  | Templated cards anchored to N rows of another panel | `source`, `template` | [panels/callouts.md](panels/callouts.md) |
+| `html`      | Static markup (sanitized) + optional templated `query` | `content` or `query`+`template` | [panels/html.md](panels/html.md) |
+| `script`    | JS escape hatch — drill-down, third-party libs. Last resort. | read the two-of-three gate first | [panels/script.md](panels/script.md) |
+| `dataset`   | Headless query; expose rows to other panels via `source` | `query`, `state:"hidden"` | [panels/dataset.md](panels/dataset.md) |
+
+> **Rule:** before writing any panel, read its `panels/<type>.md`. The table above lists the most common wrong-field mistakes; it is not a substitute for the full spec.
 
 `script` has a two-of-three decision gate at the top of its page.
 Read it before reaching for `script`.

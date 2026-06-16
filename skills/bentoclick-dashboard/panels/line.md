@@ -1,5 +1,8 @@
 # `line`
 
+> ⚠️ `line` is the **only** panel type that uses `series: [...]`.
+> Do **not** copy this pattern to `combo` or `chart` — those use different field shapes entirely.
+
 Time-series or any ordered x-axis. Multiple series via an explicit
 `series` array (wide format) or `series_key` + `value_key` (pivoted
 from long format).
