@@ -93,6 +93,12 @@ func (r *Run) roster(ctx context.Context) error {
 	db := r.Cfg.SourceDB
 	for _, ex := range excludedDBs {
 		if db == ex {
+			// Schema-preserving is built for well-known schemas like `system`:
+			// it keeps real names and masks only values, so profiling `system`
+			// is the explicit use case (in tokenizing mode it would be circular).
+			if r.Cfg.Model == ModelSchemaPreserving && db == "system" {
+				break
+			}
 			return fmt.Errorf("phase1: refusing to profile system database %q", db)
 		}
 	}

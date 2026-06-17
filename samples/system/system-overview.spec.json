@@ -1,0 +1,60 @@
+{
+  "title": "ClickHouse Cluster Health — Overview",
+  "subtitle": "A health snapshot from the anonymized system tables. Memory tables (parts, metrics, disks, replicas) are a point-in-time snapshot taken when the sandbox was built; *_log tables cover the trailing window. Identifiers shown in this report are de-anonymized for the reader.",
+  "spec_version": 1,
+  "concurrent": true,
+  "panels": [
+    {
+      "id": "intro", "type": "markdown", "width": 12,
+      "text": "## What this report covers\nThis is the fast health routing view, modeled on the Altinity *clickhouse-overview* expert skill. It rolls up object counts, resource pressure, disk headroom and replication into one screen, then flags anything outside the recommended envelope. Drill into the linked reports for **query workload**, **parts & merges**, and **logs & errors**.\n\n- **Object counts** — table/part sprawl that inflates metadata and slows restarts.\n- **Resource pressure** — memory resident vs. OS total.\n- **Disks** — local-disk headroom.\n- Anything not `OK` is narrated under **Attention** below."
+    },
+    {
+      "id": "kpis", "type": "kpi-strip", "width": 12,
+      "query": "SELECT (SELECT count() FROM system_anon.tables WHERE engine LIKE '%MergeTree%') AS mt_tables, (SELECT count() FROM system_anon.parts WHERE active) AS active_parts, (SELECT countDistinct(normalized_query_hash) FROM system_anon.query_log WHERE event_time > now() - 86400) AS query_shapes, (SELECT toFloat64(value) FROM system_anon.asynchronous_metrics WHERE metric = 'MemoryResident') AS mem_resident, (SELECT toFloat64(value) FROM system_anon.asynchronous_metrics WHERE metric = 'OSMemoryTotal') AS mem_total",
+      "tiles": [
+        { "key": "mt_tables", "label": "MergeTree tables", "format": "num" },
+        { "key": "active_parts", "label": "Active parts", "format": "num" },
+        { "key": "query_shapes", "label": "Query shapes (24h)", "format": "num" },
+        { "key": "mem_resident", "label": "Memory resident", "format": "bytes" },
+        { "key": "mem_total", "label": "OS memory", "format": "bytes" }
+      ]
+    },
+    {
+      "id": "counts", "type": "table", "width": 6, "title": "Object counts audit",
+      "query": "SELECT c.1 AS check_name, c.2 AS value, multiIf(c.2 > c.3, 'Critical', c.2 > c.4, 'Major', c.2 > c.5, 'Moderate', 'OK') AS severity FROM (SELECT arrayJoin([('MergeTree tables', toUInt64((SELECT count() FROM system_anon.tables WHERE engine LIKE '%MergeTree%')), 10000, 3000, 1000), ('Distinct databases', toUInt64((SELECT uniqExact(database) FROM system_anon.tables)), 1000, 300, 100), ('Active parts', toUInt64((SELECT count() FROM system_anon.parts WHERE active)), 120000, 90000, 60000), ('Current queries', toUInt64((SELECT count() FROM system_anon.processes WHERE is_cancelled = 0)), 100, 50, 50)]) AS c) ORDER BY value DESC",
+      "columns": [
+        { "key": "check_name", "label": "Check" },
+        { "key": "value", "label": "Value", "format": "num", "align": "right" },
+        { "key": "severity", "label": "Severity" }
+      ]
+    },
+    {
+      "id": "disks", "type": "table", "width": 6, "title": "Disk headroom",
+      "query": "SELECT name AS disk, formatReadableSize(total_space) AS total, formatReadableSize(free_space) AS free, round(100.0 * (total_space - free_space) / total_space, 1) AS used_pct FROM system_anon.disks WHERE total_space > 0 ORDER BY used_pct DESC",
+      "columns": [
+        { "key": "disk", "label": "Disk" },
+        { "key": "total", "label": "Total", "align": "right" },
+        { "key": "free", "label": "Free", "align": "right" },
+        { "key": "used_pct", "label": "Used %", "format": "num", "align": "right" }
+      ]
+    },
+    {
+      "id": "mem_hero", "type": "hero", "width": 12, "title": "Memory pressure",
+      "anchor": "kpis",
+      "template": "Server is holding **{{mem_resident|bytes!}}** resident out of {{mem_total|bytes}} OS memory — roughly {{mem_resident|bytes}} of working set. Primary-key indexes and dictionaries live inside that footprint; watch it against the *clickhouse-memory* skill thresholds before scaling reads."
+    },
+    {
+      "id": "alerts", "type": "dataset", "width": 12,
+      "query": "SELECT check_name, value, severity FROM (SELECT c.1 AS check_name, c.2 AS value, multiIf(c.2 > c.3, 'Critical', c.2 > c.4, 'Major', c.2 > c.5, 'Moderate', 'OK') AS severity FROM (SELECT arrayJoin([('MergeTree tables', toUInt64((SELECT count() FROM system_anon.tables WHERE engine LIKE '%MergeTree%')), 10000, 3000, 1000), ('Active parts', toUInt64((SELECT count() FROM system_anon.parts WHERE active)), 120000, 90000, 60000), ('Current queries', toUInt64((SELECT count() FROM system_anon.processes WHERE is_cancelled = 0)), 100, 50, 50)]) AS c)) WHERE severity != 'OK' ORDER BY value DESC"
+    },
+    {
+      "id": "attention", "type": "callouts", "width": 12, "title": "Attention",
+      "anchor": "alerts", "rows": "all",
+      "template": "**{{check_name}}** is at {{value|num}} — flagged **{{severity!}}**. Compare against the recommended envelope and route to the matching expert skill."
+    },
+    {
+      "id": "outro", "type": "markdown", "width": 12, "accent": "primary",
+      "text": "*If **Attention** is empty, every rolled-up check is within its recommended envelope.* This view intentionally favors narrative over charts — it is a router, not a time-series console. Follow the workload, parts, and logs reports for trends."
+    }
+  ]
+}

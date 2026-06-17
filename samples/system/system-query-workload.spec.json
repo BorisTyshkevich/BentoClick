@@ -1,0 +1,53 @@
+{
+  "title": "ClickHouse Query & Ingestion Workload",
+  "subtitle": "What the cluster has been doing over the trailing window, grouped by normalized query shape. SQL text is redacted in the sandbox; the shape hash and the real tables each shape touches are preserved, so the workload reads clearly without exposing any literal.",
+  "spec_version": 1,
+  "concurrent": true,
+  "panels": [
+    {
+      "id": "intro", "type": "markdown", "width": 12,
+      "text": "## Reading the real queries — with the values stripped\nEach shape is ranked by cost and shown as a real query via `normalizeQuery()`: table and column names are kept, every **literal value is replaced with `?`** (the part that could carry data). In the LLM's anonymized copy the `query` column is fully redacted; this report renders against the de-anonymized system, so you read the actual SQL shape — `SELECT … FROM real.table WHERE col = ?` — without exposing a single literal. Inserts and async-insert flushes are split out because they dominate write-heavy clusters."
+    },
+    {
+      "id": "kpis", "type": "kpi-strip", "width": 12,
+      "query": "SELECT count() AS finished, countIf(query_kind = 'Select') AS selects, countIf(query_kind IN ('Insert', 'AsyncInsertFlush')) AS inserts, round(avg(query_duration_ms)) AS avg_ms, round(quantile(0.99)(query_duration_ms)) AS p99_ms FROM system_anon.query_log WHERE type = 'QueryFinish' AND event_time > now() - 86400",
+      "tiles": [
+        { "key": "finished", "label": "Finished queries (24h)", "format": "num" },
+        { "key": "selects", "label": "Selects", "format": "num" },
+        { "key": "inserts", "label": "Inserts + flushes", "format": "num" },
+        { "key": "avg_ms", "label": "Avg duration", "format": "num" },
+        { "key": "p99_ms", "label": "p99 duration", "format": "num" }
+      ]
+    },
+    {
+      "id": "volume", "type": "line", "width": 12, "title": "Query volume by hour",
+      "query": "SELECT toStartOfHour(event_time) AS hour, countIf(query_kind = 'Select') AS selects, countIf(query_kind IN ('Insert', 'AsyncInsertFlush')) AS inserts, countIf(exception_code != 0) AS failed FROM system_anon.query_log WHERE type IN ('QueryFinish', 'ExceptionWhileProcessing', 'ExceptionBeforeStart') AND event_time > now() - 86400 GROUP BY hour ORDER BY hour",
+      "x_key": "hour",
+      "series": [
+        { "key": "selects", "label": "Selects" },
+        { "key": "inserts", "label": "Inserts + flushes" },
+        { "key": "failed", "label": "Failed" }
+      ]
+    },
+    {
+      "id": "shapes", "type": "table", "width": 12, "title": "Heaviest query shapes (by total read rows)",
+      "query": "SELECT any(query_kind) AS kind, count() AS runs, sum(read_rows) AS total_rows_read, round(avg(query_duration_ms)) AS avg_ms, any(normalizeQuery(query)) AS example_query FROM system_anon.query_log WHERE type = 'QueryFinish' AND event_time > now() - 86400 GROUP BY normalized_query_hash ORDER BY total_rows_read DESC LIMIT 12",
+      "columns": [
+        { "key": "kind", "label": "Kind" },
+        { "key": "runs", "label": "Runs", "format": "num", "align": "right" },
+        { "key": "total_rows_read", "label": "Rows read", "format": "num", "align": "right" },
+        { "key": "avg_ms", "label": "Avg ms", "format": "num", "align": "right" },
+        { "key": "example_query", "label": "Query (literals masked)" }
+      ]
+    },
+    {
+      "id": "top_shapes", "type": "dataset", "width": 12,
+      "query": "SELECT any(query_kind) AS kind, count() AS runs, sum(read_rows) AS total_rows_read, arrayStringConcat(arraySlice(arrayDistinct(arrayFlatten(groupArray(tables))), 1, 3), ', ') AS tables_touched FROM system_anon.query_log WHERE type = 'QueryFinish' AND event_time > now() - 86400 GROUP BY normalized_query_hash ORDER BY total_rows_read DESC LIMIT 3"
+    },
+    {
+      "id": "shape_story", "type": "callouts", "width": 12, "title": "Where the read work goes",
+      "anchor": "top_shapes", "rows": "all",
+      "template": "A **{{kind}}** shape ran {{runs|num}} times and read **{{total_rows_read|num!}}** rows, touching `{{tables_touched}}`. If that is more rows than the result justifies, it is the first candidate for an index or projection review."
+    }
+  ]
+}

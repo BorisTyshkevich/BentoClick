@@ -1,0 +1,49 @@
+{
+  "title": "ClickHouse Logs & Errors",
+  "subtitle": "Server log patterns from text_log and failed queries from query_log. Free-form log messages are redacted in the sandbox, but the message_format_string template is kept — so error patterns group cleanly without leaking the values that filled them in.",
+  "spec_version": 1,
+  "concurrent": true,
+  "panels": [
+    {
+      "id": "intro", "type": "markdown", "width": 12, "accent": "warn",
+      "text": "## Errors with their identifiers, not their stack traces\nClickHouse logs a `message_format_string` template (e.g. `Table {}.{} does not exist...`) plus the positional arguments that fill its `{}` slots in `value1…value10`. This report rebuilds the readable error by folding those args back into the template — so you see `Table system.token_processors does not exist…` with the **real identifiers**, not the raw `message` (which also carries the stack trace, client IP and original query). In the LLM's anonymized copy the args are redacted, so the same row reads `Table [redacted].[redacted] does not exist…` — structure kept, identifiers hidden. Modeled on the *clickhouse-logs* skill; query-level failures are cross-checked against `query_log` exception codes."
+    },
+    {
+      "id": "kpis", "type": "kpi-strip", "width": 12,
+      "query": "SELECT (SELECT count() FROM system_anon.text_log WHERE level = 'Error') AS errors, (SELECT count() FROM system_anon.text_log WHERE level = 'Warning') AS warnings, (SELECT countDistinct(message_format_string) FROM system_anon.text_log WHERE level = 'Error' AND notEmpty(message_format_string)) AS error_patterns, (SELECT count() FROM system_anon.query_log WHERE exception_code != 0 AND event_time > now() - 86400) AS failed_queries_24h",
+      "tiles": [
+        { "key": "errors", "label": "Error log lines", "format": "num" },
+        { "key": "warnings", "label": "Warning log lines", "format": "num" },
+        { "key": "error_patterns", "label": "Distinct error patterns", "format": "num" },
+        { "key": "failed_queries_24h", "label": "Failed queries (24h)", "format": "num" }
+      ]
+    },
+    {
+      "id": "patterns", "type": "table", "width": 12, "title": "Top errors (identifiers filled in)",
+      "query": "SELECT arrayFold((acc, v) -> replaceOne(acc, '{}', v), [value1, value2, value3, value4, value5, value6, value7, value8, value9, value10], CAST(message_format_string AS String)) AS error, count() AS n, max(event_time) AS last_seen FROM system_anon.text_log WHERE level = 'Error' AND notEmpty(message_format_string) GROUP BY error ORDER BY n DESC LIMIT 12",
+      "columns": [
+        { "key": "error", "label": "Error" },
+        { "key": "n", "label": "Count", "format": "num", "align": "right" },
+        { "key": "last_seen", "label": "Last seen", "format": "date", "align": "right" }
+      ]
+    },
+    {
+      "id": "top_patterns", "type": "dataset", "width": 12,
+      "query": "SELECT arrayFold((acc, v) -> replaceOne(acc, '{}', v), [value1, value2, value3, value4, value5, value6, value7, value8, value9, value10], CAST(message_format_string AS String)) AS error, count() AS n FROM system_anon.text_log WHERE level = 'Error' AND notEmpty(message_format_string) GROUP BY error ORDER BY n DESC LIMIT 3"
+    },
+    {
+      "id": "pattern_story", "type": "callouts", "width": 12, "title": "Most frequent errors",
+      "anchor": "top_patterns", "rows": "all",
+      "template": "`{{error}}` occurred {{n|num!}} times — reconstructed from the log template with its identifier arguments filled in."
+    },
+    {
+      "id": "exceptions", "type": "table", "width": 12, "title": "Query failures by error code (24h)",
+      "query": "SELECT errorCodeToName(exception_code) AS error_name, exception_code AS code, count() AS n FROM system_anon.query_log WHERE exception_code != 0 AND event_time > now() - 86400 GROUP BY error_name, code ORDER BY n DESC LIMIT 12",
+      "columns": [
+        { "key": "error_name", "label": "Error" },
+        { "key": "code", "label": "Code", "format": "num", "align": "right" },
+        { "key": "n", "label": "Count", "format": "num", "align": "right" }
+      ]
+    }
+  ]
+}
