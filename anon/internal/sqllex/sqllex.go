@@ -263,10 +263,15 @@ func (rw *Rewriter) IdentifierWords(value string) []string {
 	}
 	toks := lex(value)
 	var out []string
-	for i, t := range toks {
+	for _, t := range toks {
 		switch t.kind {
 		case tWord:
-			if sqlKeywords[strings.ToUpper(t.text)] || rw.vocabKeep(t.text) || nextIs(toks, i, "(") {
+			// Keep only true SQL keywords and known CH vocabulary (the keep
+			// registry is loaded from system.functions + data_type_families).
+			// An unknown word followed by '(' is a USER-DEFINED function, not a
+			// builtin — collect it so it gets tokenized (fail-closed: a sensitive
+			// UDF/object name must not survive un-anonymized).
+			if sqlKeywords[strings.ToUpper(t.text)] || rw.vocabKeep(t.text) {
 				continue
 			}
 			out = append(out, t.text)
@@ -379,9 +384,9 @@ func (rw *Rewriter) tok(toks []tok, i int, t tok, strict bool) string {
 	if rw.vocabKeep(t.text) { // data type / function / setting / engine / combinator form
 		return t.text
 	}
-	if nextIs(toks, i, "(") { // unknown function
-		return t.text
-	}
+	// An unknown word followed by '(' is a USER-DEFINED function (builtins are in
+	// the keep registry from system.functions). Fail closed: tokenize its name so
+	// a sensitive UDF/object name cannot survive into the sandbox/profile.
 	rw.IdsSubstituted++
 	return rw.mustSQL(name)
 }

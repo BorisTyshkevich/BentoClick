@@ -64,7 +64,13 @@ func ClassifyPreserve(c Column, overrides map[string]string) PreserveClass {
 		return PreserveClass(ov)
 	}
 	if strings.HasPrefix(c.Type, "Map(") {
-		return "keep" // ProfileEvents / Settings etc. — CH-internal name/number pairs
+		// Keep only CH-internal name/number maps (ProfileEvents/Settings/counters)
+		// real; any OTHER Map column's values are redacted (fail-closed) — a
+		// generic Map could carry PII. Operators can re-include one via overrides.
+		if isInternalMapColumn(c.Name) {
+			return "keep"
+		}
+		return "redact"
 	}
 	if preserveKeepable(c.Type) {
 		return "keep"
@@ -90,6 +96,16 @@ func ClassifyPreserve(c Column, overrides map[string]string) PreserveClass {
 		return "redact" // fail-closed default for any remaining string-bearing column
 	}
 	return "drop"
+}
+
+// isInternalMapColumn allowlists ClickHouse-internal Map columns whose values
+// are counters / setting values (no user data), kept real in schema-preserving.
+func isInternalMapColumn(name string) bool {
+	switch name {
+	case "ProfileEvents", "Settings", "replica_is_active", "asynchronous_read_counters":
+		return true
+	}
+	return strings.HasSuffix(name, "_counters") || strings.HasSuffix(name, "ProfileEvents")
 }
 
 // preserveKeepable: numeric / temporal / bool / enum / UUID, possibly wrapped in

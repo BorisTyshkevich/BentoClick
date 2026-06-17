@@ -4,6 +4,11 @@
 //
 //	ANON_TEST_CONNECTION=demo go test ./internal/integration/...
 //
+// or pass the full client command directly (CI uses this — no named-connection
+// config needed):
+//
+//	ANON_TEST_CMD="clickhouse-client --host 127.0.0.1 --port 9000" go test ./internal/integration/...
+//
 // Cross-cluster suite (source via a wrapper command, dest via a connection):
 //
 //	ANON_TEST_SOURCE_CMD="cl otel" ANON_TEST_SOURCE_DB=claude_otel \
@@ -50,16 +55,102 @@ type fixture struct {
 	run          *discover.Run
 	ctx          context.Context
 	crossCluster bool
+	seededSrcDB  string // non-empty when the test created the source DB (drop it on cleanup)
 }
 
-// setupSingle: source = dest = ANON_TEST_CONNECTION, source DB "git".
-func setupSingle(t *testing.T) *fixture {
-	c := os.Getenv("ANON_TEST_CONNECTION")
-	if c == "" {
-		t.Skip("ANON_TEST_CONNECTION not set; skipping integration tests")
+// singleClientCmd resolves the clickhouse-client command for the single-cluster
+// suite. ANON_TEST_CMD wins (a full client command, e.g.
+// "clickhouse-client --host 127.0.0.1 --port 9000") — it sidesteps the
+// named-connection config, which is what CI uses. Otherwise ANON_TEST_CONNECTION
+// builds "clickhouse-client --connection <name>". Skips if neither is set.
+func singleClientCmd(t *testing.T) string {
+	if cmd := os.Getenv("ANON_TEST_CMD"); cmd != "" {
+		return cmd
 	}
-	cmd := "clickhouse-client --connection " + c
-	return setup(t, cmd, cmd, "git", fmt.Sprintf("anontest_sb_%d", os.Getpid()), false)
+	if c := os.Getenv("ANON_TEST_CONNECTION"); c != "" {
+		return "clickhouse-client --connection " + c
+	}
+	t.Skip("ANON_TEST_CMD / ANON_TEST_CONNECTION not set; skipping integration tests")
+	return ""
+}
+
+// setupSingle: source = dest = the single-cluster client. Self-seeds a small,
+// representative source DB so the suite is portable (no pre-existing dataset
+// needed) — runs identically locally and in CI.
+func setupSingle(t *testing.T) *fixture {
+	cmd := singleClientCmd(t)
+	srcDB := fmt.Sprintf("anontest_src_%d", os.Getpid())
+	seedSource(t, chclient.NewFromString(cmd), srcDB)
+	f := setup(t, cmd, cmd, srcDB, fmt.Sprintf("anontest_sb_%d", os.Getpid()), false)
+	f.seededSrcDB = srcDB
+	return f
+}
+
+// seedSource builds a tiny git-commits-shaped dataset exercising the masking
+// classes: a join key shared across two tables (author_email), a high-card hash
+// (joinkey), free text (redact), names, low-card vocabulary, measures, time.
+func seedSource(t *testing.T, ex chclient.Executor, db string) {
+	t.Helper()
+	ctx := context.Background()
+	stmts := []string{
+		fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", db),
+		fmt.Sprintf("CREATE DATABASE `%s`", db),
+		fmt.Sprintf("CREATE TABLE `%s`.commits ("+
+			"commit_hash String, author_name String, author_email String, "+
+			"message String, added_lines UInt32, repo_name LowCardinality(String), "+
+			"commit_time DateTime) ENGINE = MergeTree ORDER BY commit_time", db),
+		fmt.Sprintf("INSERT INTO `%s`.commits SELECT "+
+			"lower(hex(murmurHash3_128(toString(number)))), concat('author_', toString(number %% 37)), "+
+			"concat('user', toString(number %% 37), '@example.com'), "+
+			"concat('commit message ', toString(number)), toUInt32(number %% 900), "+
+			"['alpha','beta','gamma'][1 + (number %% 3)], now() - toIntervalSecond(number) "+
+			"FROM numbers(3000)", db),
+		fmt.Sprintf("CREATE TABLE `%s`.authors ("+
+			"author_email String, display_name String, commits_count UInt64) "+
+			"ENGINE = MergeTree ORDER BY author_email", db),
+		fmt.Sprintf("INSERT INTO `%s`.authors SELECT "+
+			"concat('user', toString(number), '@example.com'), "+
+			"concat('Author ', toString(number)), toUInt64(number * 7) FROM numbers(37)", db),
+		// make system.query_log exist + flush so the mining phase has input
+		"SYSTEM FLUSH LOGS",
+	}
+	for _, s := range stmts {
+		if err := ex.Exec(ctx, s); err != nil {
+			t.Fatalf("seed source DB %q: %v\n  stmt: %s", db, err, s)
+		}
+	}
+}
+
+// seedRegistry pre-creates the LLM-facing registry *_data tables (normally
+// provisioned by anon/integrations/bentoclick/sql/08-schema-guide-registry.sql)
+// in the per-test registry DB, so the pipeline's registry write lands like a
+// real deploy. DDL mirrors 08-…sql (minus the views/comments/grants).
+func seedRegistry(t *testing.T, ex chclient.Executor, db string) {
+	t.Helper()
+	ctx := context.Background()
+	stmts := []string{
+		fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", db),
+		fmt.Sprintf("CREATE TABLE IF NOT EXISTS `%s`.schema_guide_data ("+
+			"run_id String, anon_database String, "+
+			"model Enum8('tokenizing'=1,'schema-preserving'=2), "+
+			"naming Enum8('tokens'=1,'real'=2), "+
+			"table_name String, table_role String DEFAULT '', "+
+			"total_rows UInt64 DEFAULT 0, sandbox_rows UInt64 DEFAULT 0, position UInt32 DEFAULT 0, "+
+			"column_name String, type String DEFAULT '', "+
+			"class Enum8('real'=1,'identifier'=2,'redacted'=3,'attrmap'=4), "+
+			"usage String DEFAULT '', updated_at DateTime DEFAULT now()) "+
+			"ENGINE = ReplacingMergeTree(updated_at) ORDER BY (anon_database, table_name, column_name)", db),
+		fmt.Sprintf("CREATE TABLE IF NOT EXISTS `%s`.attr_guide_data ("+
+			"run_id String, anon_database String, table_name String, column_name String, attr_key String, "+
+			"role Enum8('vocabulary'=1,'measure'=2,'identity'=3,'sensitive'=4), "+
+			"usage String DEFAULT '', updated_at DateTime DEFAULT now()) "+
+			"ENGINE = ReplacingMergeTree(updated_at) ORDER BY (anon_database, table_name, column_name, attr_key)", db),
+	}
+	for _, s := range stmts {
+		if err := ex.Exec(ctx, s); err != nil {
+			t.Fatalf("seed registry DB %q: %v\n  stmt: %s", db, err, s)
+		}
+	}
 }
 
 // setupCross: source = ANON_TEST_SOURCE_CMD (db ANON_TEST_SOURCE_DB, default
@@ -86,6 +177,8 @@ func setup(t *testing.T, srcCmd, dstCmd, srcDB, destDB string, cross bool) *fixt
 		SourceDB:   srcDB,
 		DestDB:     destDB, // differs from srcDB -> DB name stays tokenized
 		MetaDB:     metaDB,
+		SecretDB:   metaDB, // co-locate the secret in the per-test meta DB (dropped on cleanup)
+		RegistryDB: metaDB, // ditto for the LLM-facing registry (normally bentoclick)
 		WindowDays: 7,
 		SampleRows: 10_000,
 		HMACKey:    []byte(testKey),
@@ -103,6 +196,9 @@ func setup(t *testing.T, srcCmd, dstCmd, srcDB, destDB string, cross bool) *fixt
 		metaDB: metaDB, cfg: cfg, run: r, ctx: context.Background(), crossCluster: cross,
 	}
 	t.Cleanup(func() { f.cleanup(t) })
+	// the registry *_data tables are deploy-provisioned (08-…sql); create them
+	// in the per-test registry DB (dest cluster) so the pipeline's write lands.
+	seedRegistry(t, dstEx, cfg.RegistryDB)
 	return f
 }
 
@@ -124,6 +220,11 @@ func (f *fixture) cleanup(t *testing.T) {
 	}
 	if err := f.srcEx.Exec(f.ctx, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", f.metaDB)); err != nil {
 		t.Logf("cleanup source meta: %v", err)
+	}
+	if f.seededSrcDB != "" {
+		if err := f.srcEx.Exec(f.ctx, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", f.seededSrcDB)); err != nil {
+			t.Logf("cleanup seeded source: %v", err)
+		}
 	}
 }
 
@@ -384,11 +485,7 @@ func (f *fixture) assertAttrMap(t *testing.T) {
 // E: a decoy database named like our dest DB but NOT registered must abort
 // the run and must never be dropped.
 func TestSafetyDecoy(t *testing.T) {
-	c := os.Getenv("ANON_TEST_CONNECTION")
-	if c == "" {
-		t.Skip("ANON_TEST_CONNECTION not set; skipping integration tests")
-	}
-	cmd := "clickhouse-client --connection " + c
+	cmd := singleClientCmd(t)
 	ex := chclient.NewFromString(cmd)
 	ctx := context.Background()
 	metaDB := fmt.Sprintf("altinity_anontest_decoy_%d", os.Getpid())
@@ -400,9 +497,15 @@ func TestSafetyDecoy(t *testing.T) {
 	defer ex.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", decoy))
 	defer ex.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", metaDB))
 
+	// a real source so the run gets PAST roster and reaches the dest-DB safety
+	// check (the decoy is a foreign object with our dest name → must abort).
+	srcDB := fmt.Sprintf("anontest_decoy_src_%d", os.Getpid())
+	seedSource(t, ex, srcDB)
+	defer ex.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", srcDB))
+
 	cfg := discover.Config{
-		Source: cmd, Dest: cmd, SourceDB: "git", DestDB: decoy,
-		MetaDB: metaDB, WindowDays: 7, SampleRows: 1000,
+		Source: cmd, Dest: cmd, SourceDB: srcDB, DestDB: decoy,
+		MetaDB: metaDB, SecretDB: metaDB, WindowDays: 7, SampleRows: 1000,
 		HMACKey: []byte(testKey), Log: t.Logf,
 	}
 	r, err := discover.NewRun(cfg, ex, ex)

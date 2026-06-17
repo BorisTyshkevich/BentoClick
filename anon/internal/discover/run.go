@@ -84,8 +84,8 @@ type Run struct {
 	SrcEx chclient.Executor // discovery, mining, masking SELECTs (real names stay here)
 	DstEx chclient.Executor // sandbox objects + tokens-only profile
 
-	SrcStore *store.Store // trusted tables (identifier_map, masking_plan) on the source meta DB
-	DstStore *store.Store // profile tables + registry + manifest on the dest meta DB
+	SecretStore *store.Store // de-anon secret (identifier_map, masking_plan) on the source SECRET DB
+	DstStore    *store.Store // profile tables + registry + manifest on the dest meta DB
 
 	RunID    string
 	Version  string
@@ -112,16 +112,69 @@ type Run struct {
 	// writeMaskingPlan, emitted to profile_attr_keys in writeProfile).
 	AttrKeyRoles []AttrKeyInfo
 
+	// attrCache memoizes attrKeyRoles per "db\ttable\tcol" so observe() (which
+	// must register custom field_ key tokens BEFORE Build) and writeMaskingPlan
+	// (which mints them AFTER Build) see the exact same key set — one scan, no race.
+	attrCache map[string][]AttrKeyInfo
+
 	started time.Time
 }
 
 // AttrKeyInfo is one attribute-map key's classification: real names + role +
 // the value-cardinality it was decided from, and whether its value is kept real.
+// KeyOut is the SANDBOX key name (real for semconv, field_<hex> token for custom).
 type AttrKeyInfo struct {
 	DB, Table, Column, Key string
 	Role                   string
 	Cardinality            uint64
 	Kept                   bool
+	KeyOut                 string
+}
+
+// outKey returns the sandbox/profile key name — the tokenized KeyOut when set,
+// else the real key (defensive fallback).
+func (a AttrKeyInfo) outKey() string {
+	if a.KeyOut != "" {
+		return a.KeyOut
+	}
+	return a.Key
+}
+
+// attrParams returns the attr-key classification threshold + compiled PII deny
+// regexp (operator pattern OR-ed onto the default), shared by observe + masking.
+func (r *Run) attrParams() (uint64, *regexp.Regexp, error) {
+	threshold := r.Cfg.AttrCardThreshold
+	if threshold == 0 {
+		threshold = 64
+	}
+	pat := classify.DefaultPIIKeyPattern
+	if r.Cfg.PIIKeyPattern != "" {
+		pat = "(" + pat + ")|(" + r.Cfg.PIIKeyPattern + ")"
+	}
+	re, err := regexp.Compile(pat)
+	return threshold, re, err
+}
+
+// attrRolesFor returns the (memoized) per-key roles for one attrmap column, so
+// the observe wave and the masking plan agree on exactly which custom keys exist.
+func (r *Run) attrRolesFor(ctx context.Context, db, table, col string) ([]AttrKeyInfo, error) {
+	if r.attrCache == nil {
+		r.attrCache = map[string][]AttrKeyInfo{}
+	}
+	k := db + "\t" + table + "\t" + col
+	if v, ok := r.attrCache[k]; ok {
+		return v, nil
+	}
+	threshold, denyRe, err := r.attrParams()
+	if err != nil {
+		return nil, err
+	}
+	infos, err := r.attrKeyRoles(ctx, db, table, col, threshold, denyRe)
+	if err != nil {
+		return nil, err
+	}
+	r.attrCache[k] = infos
+	return infos, nil
 }
 
 // attrKeyRoles scans one attrmap column's keys on the SOURCE and classifies each
@@ -215,7 +268,7 @@ func NewRun(cfg Config, src, dst chclient.Executor) (*Run, error) {
 	}
 	return &Run{
 		Cfg: cfg, SrcEx: src, DstEx: dst,
-		SrcStore:    store.New(src, cfg.MetaDB),
+		SecretStore: store.New(src, cfg.SecretDB),
 		DstStore:    store.New(dst, cfg.MetaDB),
 		Shape:       map[string]string{},
 		byFull:      map[string]*Table{},
@@ -235,7 +288,7 @@ func (r *Run) Execute(ctx context.Context) error {
 	log := r.Cfg.Log
 
 	if !r.Cfg.DryRun {
-		if err := r.SrcStore.InitTrusted(ctx); err != nil {
+		if err := r.SecretStore.InitTrusted(ctx); err != nil {
 			return err
 		}
 		if err := r.DstStore.InitProfile(ctx); err != nil {
@@ -343,6 +396,22 @@ func (r *Run) observe(ctx context.Context) error {
 		im.Observe("tbl", t.Name)
 		for _, c := range t.Columns {
 			im.Observe("col", c.Name)
+			// Custom (non-semconv) attrmap KEY names are tokenized to field_<hex>
+			// (P3). They must be observed HERE, before Build — writeMaskingPlan
+			// mints them post-Build and the IdMap is fail-closed. The scan is
+			// cached so the masking plan sees the identical key set.
+			if classify.Classify(c) == classify.ClassAttrMap {
+				infos, err := r.attrRolesFor(ctx, t.Database, t.Name, c.Name)
+				if err != nil {
+					r.Notes = append(r.Notes, fmt.Sprintf("attr-key scan failed for %s.%s.%s: %s", t.Database, t.Name, c.Name, firstLine(err.Error())))
+					continue
+				}
+				for _, info := range infos {
+					if !classify.IsSemconvKey(info.Key) {
+						im.Observe("field", info.Key)
+					}
+				}
+			}
 		}
 	}
 	for _, rel := range r.Relations {
@@ -460,14 +529,15 @@ func b8(v bool) *string {
 }
 
 // writeProfile emits all tokenized profile rows (dest) plus the identifier
-// map (source — trusted side only).
+// map (source — de-anon secret only).
 func (r *Run) writeProfile(ctx context.Context) error {
-	// identifier_map (trusted side: SOURCE meta DB only)
+	// identifier_map (de-anon secret: SOURCE secret DB only, never the meta/
+	// registry DB the LLM-facing read path lives in)
 	var mapRows [][]*string
 	for _, p := range r.IdMap.Pairs() {
 		mapRows = append(mapRows, []*string{chclient.S(r.RunID), chclient.S(p[0]), chclient.S(p[1]), chclient.S(p[2])})
 	}
-	if err := r.SrcStore.Insert(ctx, "identifier_map", []string{"run_id", "kind", "original", "token"}, mapRows); err != nil {
+	if err := r.SecretStore.Insert(ctx, "identifier_map", []string{"run_id", "kind", "original", "token"}, mapRows); err != nil {
 		return err
 	}
 
@@ -529,7 +599,7 @@ func (r *Run) writeProfile(ctx context.Context) error {
 				return err
 			}
 			class := classify.Classify(c)
-			_, _, include := classify.MaskExpr(c, class, 0)
+			_, _, include := classify.MaskExpr(c, class, 0, nil)
 			colRows = append(colRows, []*string{
 				chclient.S(r.RunID), chclient.S(dbTok), chclient.S(tblTok), chclient.S(colTok),
 				u64s(uint64(i + 1)), chclient.S(r.Rw.Rewrite(c.Type, false)), chclient.S(string(class)),
@@ -550,8 +620,9 @@ func (r *Run) writeProfile(ctx context.Context) error {
 		return err
 	}
 
-	// profile_attr_keys — per-attrmap-key roles (tokens for db/table/col; the
-	// attribute KEY itself is real, as it is in the sandbox tables).
+	// profile_attr_keys — per-attrmap-key roles (tokens for db/table/col). The
+	// attribute KEY is the SANDBOX key: real for semconv keys, the field_<hex>
+	// token for custom keys (so the LLM never sees a custom key name).
 	var attrRows [][]*string
 	for _, a := range r.AttrKeyRoles {
 		dbTok, err := r.tok("db", a.DB)
@@ -568,7 +639,7 @@ func (r *Run) writeProfile(ctx context.Context) error {
 		}
 		attrRows = append(attrRows, []*string{
 			s(r.RunID), s(dbTok), s(tblTok), s(colTok),
-			s(a.Key), s(a.Role), s(strconv.FormatUint(a.Cardinality, 10)), b8x(a.Kept),
+			s(a.outKey()), s(a.Role), s(strconv.FormatUint(a.Cardinality, 10)), b8x(a.Kept),
 		})
 	}
 	if len(attrRows) > 0 {

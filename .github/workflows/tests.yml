@@ -8,12 +8,20 @@ on:
 
 jobs:
   test:
-    name: schema (pytest) + runtime (vitest) + coverage
+    name: go (vet+unit+coverage) + schema (pytest) + runtime (vitest)
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
+
+      # `make test` now runs `go-test` first (anon/ vet + build + unit suite
+      # with the GO_COVER_MIN floor) before the schema/runtime suites.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: anon/go.mod
+          cache: false   # anon/ is stdlib-only (no go.sum)
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -45,3 +53,34 @@ jobs:
           path: tests/runtime/coverage/
           if-no-files-found: ignore
           retention-days: 14
+
+  # The anond integration suite asserts the end-to-end no-leak / trusted-split /
+  # detok-bijection invariants — the security guarantees that previously ran
+  # ONLY in t.Skip()'d tests (H5). No Docker: franchb/embedded-clickhouse runs
+  # ClickHouse as a host subprocess (TestMain), using the clickhouse binary
+  # installed below. The cross-cluster cases need the `cl otel` wrapper and stay
+  # local-only.
+  go-integration:
+    name: go integration (no-leak / trusted-split, embedded ClickHouse)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: anon/go.mod
+          cache: false
+
+      - name: Install clickhouse binary
+        run: |
+          curl -fsSL https://clickhouse.com/ -o /tmp/ch-install.sh
+          sh /tmp/ch-install.sh        # downloads the single ./clickhouse binary
+          sudo install -m 0755 ./clickhouse /usr/local/bin/clickhouse
+          clickhouse --version
+
+      - name: Run anond integration suite (embedded ClickHouse)
+        # TestMain finds `clickhouse` on PATH and boots an embedded server.
+        run: cd anon && go test ./internal/integration/ -run 'TestPipeline|TestSafetyDecoy' -v

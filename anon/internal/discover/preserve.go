@@ -116,9 +116,10 @@ func (r *Run) executePreserve(ctx context.Context) error {
 		return nil
 	}
 
-	// secret store (identifier_map + masking_plan) and the LLM-facing registry.
-	secret := store.New(r.SrcEx, r.Cfg.SecretDB)
-	if err := secret.InitTrusted(ctx); err != nil {
+	// de-anon secret store (identifier_map + masking_plan) and the LLM-facing
+	// registry. Both anond models write the secret to r.SecretStore (SecretDB),
+	// never the meta/registry DB — see NewRun.
+	if err := r.SecretStore.InitTrusted(ctx); err != nil {
 		return err
 	}
 	reg := store.New(r.DstEx, r.Cfg.RegistryDB)
@@ -178,18 +179,18 @@ func (r *Run) executePreserve(ctx context.Context) error {
 		}
 	}
 	if len(allMints) > 0 {
-		if err := secret.Insert(ctx, "identifier_map", []string{"run_id", "kind", "original", "token"}, allMints); err != nil {
+		if err := r.SecretStore.Insert(ctx, "identifier_map", []string{"run_id", "kind", "original", "token"}, allMints); err != nil {
 			return err
 		}
 	}
 	if len(maskRows) > 0 {
-		if err := secret.Insert(ctx, "masking_plan",
+		if err := r.SecretStore.Insert(ctx, "masking_plan",
 			[]string{"run_id", "database", "table", "column", "class", "transform", "included"}, maskRows); err != nil {
 			return err
 		}
 	}
 	if len(allReg) > 0 {
-		if err := reg.Insert(ctx, "schema_guide", registrySchemaCols, allReg); err != nil {
+		if err := reg.Insert(ctx, "schema_guide_data", registrySchemaCols, allReg); err != nil {
 			return err
 		}
 	}
@@ -255,8 +256,9 @@ func (r *Run) materializePreserve(ctx context.Context, sbDB string, t *Table, p 
 var registryAttrCols = []string{"run_id", "anon_database", "table_name", "column_name", "attr_key", "role", "usage"}
 
 // writeSchemaGuideTokenizing writes registry rows for the tokenizing model
-// (token table/column names, naming='tokens') into RegistryDB.schema_guide and
-// the attrmap key roles into RegistryDB.attr_guide.
+// (token table/column names, naming='tokens') into the RegistryDB.schema_guide_data
+// backing table and the attrmap key roles into RegistryDB.attr_guide_data (the
+// schema_guide/attr_guide views read these *_data tables FINAL).
 func (r *Run) writeSchemaGuideTokenizing(ctx context.Context) error {
 	reg := store.New(r.DstEx, r.Cfg.RegistryDB)
 	anonDB := r.Cfg.DestDB
@@ -289,11 +291,12 @@ func (r *Run) writeSchemaGuideTokenizing(ctx context.Context) error {
 		}
 	}
 	if len(rows) > 0 {
-		if err := reg.Insert(ctx, "schema_guide", registrySchemaCols, rows); err != nil {
+		if err := reg.Insert(ctx, "schema_guide_data", registrySchemaCols, rows); err != nil {
 			return err
 		}
 	}
-	// attr_guide: token db/table/col, real attr key, role + usage.
+	// attr_guide: token db/table/col, sandbox attr key (semconv real / custom
+	// tokenized), role + usage.
 	var aRows [][]*string
 	for _, a := range r.AttrKeyRoles {
 		tblTok, err := r.tok("tbl", a.Table)
@@ -305,11 +308,11 @@ func (r *Run) writeSchemaGuideTokenizing(ctx context.Context) error {
 			return err
 		}
 		aRows = append(aRows, []*string{
-			s(r.RunID), s(anonDB), s(tblTok), s(colTok), s(a.Key), s(a.Role), s(attrUsage(a.Role)),
+			s(r.RunID), s(anonDB), s(tblTok), s(colTok), s(a.outKey()), s(a.Role), s(attrUsage(a.Role)),
 		})
 	}
 	if len(aRows) > 0 {
-		return reg.Insert(ctx, "attr_guide", registryAttrCols, aRows)
+		return reg.Insert(ctx, "attr_guide_data", registryAttrCols, aRows)
 	}
 	return nil
 }

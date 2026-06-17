@@ -37,8 +37,8 @@ dictionary) and `${DB}_definer` (to resolve tokens inside the DEFINER view).
 |---|---|---|
 | Real data | `claude_otel.*` | — (none) |
 | Masked data | — | `claude_otel.*` (token tables) |
-| Trusted meta | `altinity.{identifier_map, masking_plan}` | — |
-| Tokens-only meta | — | `altinity.{profile_*, generated_objects, manifest}` |
+| De-anon secret | `${SECRET_DB}.{identifier_map, masking_plan}` + `token_to_real` dict (e.g. `bentosecrets`) | — |
+| Tokens-only meta | — | `${META_DB}.{profile_*, generated_objects, manifest}` |
 | bentoclick | `bentoclick.*` (dashboards_raw → dashboards_tok → dashboards view) + `token_to_real` dict | — |
 | LLM touches | writes token specs; reads `dashboards_tok` (tokens) | reads sandbox + `profile_*` (tokens) |
 | Human touches | reads `bentoclick.dashboards` (real), runs panel SQL on `claude_otel.*` | — |
@@ -50,10 +50,10 @@ dictionary) and `${DB}_definer` (to resolve tokens inside the DEFINER view).
 | Principal | Type | Grants | Explicitly denied |
 |---|---|---|---|
 | `anond` | service user | `SELECT system.*`; `SELECT ${DATA_DB}.*`; on `${META_DB}.*`: `SELECT, INSERT, CREATE TABLE, CREATE DICTIONARY, ALTER, DROP TABLE` | write on `${DATA_DB}`; CREATE/DROP DATABASE; access management |
-| `anon_dict_reader` | service user | `SELECT ${META_DB}.identifier_map` — and nothing else (`DEFAULT ROLE NONE`) | everything else |
-| `${DB}_definer` | definer user | `SELECT ${DB}.dashboards_raw`; `INSERT/SELECT ${DB}.dashboards_tok`; `dictGet ${META_DB}.token_to_real` | real `${DATA_DB}`; `identifier_map` direct |
-| `anon_author_role` | LLM role | `INSERT(cols) ${DB}.dashboards_raw`; `SELECT ${DB}.dashboards_tok` (tokens) | `${DB}.dashboards` (view), `token_to_real`, `${META_DB}.*`, `${DATA_DB}.*` |
-| `${DB}_anon_viewer_role` | human role | `SELECT ${DB}.dashboards` (de-tok view) + `${DB}.dashboards_prefix`; **plus the viewer's own `${DATA_DB}` grants, assigned per-user** | `dashboards_tok`, `dashboards_raw`, `token_to_real`, `${META_DB}.*` |
+| `anon_dict_reader` | service user | `SELECT ${SECRET_DB}.identifier_map` — and nothing else (`DEFAULT ROLE NONE`) | everything else |
+| `${DB}_definer` | definer user | `SELECT ${DB}.dashboards_raw`; `INSERT/SELECT ${DB}.dashboards_tok`; `dictGet ${SECRET_DB}.token_to_real` | real `${DATA_DB}`; `identifier_map` direct |
+| `anon_author_role` | LLM role | `INSERT(cols) ${DB}.dashboards_raw`; `SELECT ${DB}.dashboards_tok` (tokens) | `${DB}.dashboards` (view), `token_to_real`, `${SECRET_DB}.*`, `${META_DB}.*`, `${DATA_DB}.*` |
+| `${DB}_anon_viewer_role` | human role | `SELECT ${DB}.dashboards` (de-tok view) + `${DB}.dashboards_prefix`; **plus the viewer's own `${DATA_DB}` grants, assigned per-user** | `dashboards_tok`, `dashboards_raw`, `token_to_real`, `${SECRET_DB}.*`, `${META_DB}.*` |
 
 ### DEMO (sandbox)
 
@@ -98,7 +98,8 @@ Do **not** grant the stock `reader_role`/`writer_role` to either in anon mode.
 The CLI runs today as `clickhouse_operator`. The redesign gives it a dedicated
 `anond` user per cluster (`rbac/anond-service-users.sql`). On the **source**
 (real data) it gets no `CREATE DATABASE` and no real-data writes — pre-create
-`${META_DB}` once as admin. On the **sandbox** it needs `CREATE DATABASE`
+`${META_DB}` (LLM-facing meta/registry) and `${SECRET_DB}` (de-anon secret)
+once as admin. On the **sandbox** it needs `CREATE DATABASE`
 (dynamic token DB names); that breadth is bounded only by anond's own
 registry/`ensureOurs` logic, not by CH grants — stated honestly because CH
 can't grant CREATE DATABASE by name pattern.
@@ -107,20 +108,20 @@ can't grant CREATE DATABASE by name pattern.
 
 ```sql
 -- the de-anon secret is reachable by exactly two principals:
-SHOW GRANTS FOR anon_dict_reader;          -- exactly: SELECT altinity.identifier_map
-SHOW GRANTS FOR bentoclick_definer;        -- includes dictGet altinity.token_to_real
+SHOW GRANTS FOR anon_dict_reader;          -- exactly: SELECT ${SECRET_DB}.identifier_map
+SHOW GRANTS FOR bentoclick_definer;        -- includes dictGet ${SECRET_DB}.token_to_real
 
 -- the LLM role resolves nothing and sees no real data:
 SHOW GRANTS FOR anon_author_role;          -- only INSERT dashboards_raw + SELECT dashboards_tok
 -- negative checks, as a user carrying ONLY anon_author_role:
 --   SELECT … FROM bentoclick.dashboards         -> DENIED (the de-tok view)
---   SELECT dictGet('altinity.token_to_real',…)  -> DENIED
+--   SELECT dictGet('${SECRET_DB}.token_to_real',…)  -> DENIED
 --   SELECT … FROM bentoclick.dashboards_tok     -> ALLOWED (tokens)
 
 -- the dictionary leaks no secret in its definition:
 SELECT position(create_table_query, '<the password>'),    -- expect 0
        position(create_table_query, '<a known real name>') -- expect 0
-FROM system.tables WHERE database = 'altinity' AND name = 'token_to_real';
+FROM system.tables WHERE database = '${SECRET_DB}' AND name = 'token_to_real';
 
 -- the viewer sees real specs but not the tokenized tier:
 SHOW GRANTS FOR bentoclick_anon_viewer_role;  -- SELECT dashboards + dashboards_prefix only
@@ -129,7 +130,7 @@ SHOW GRANTS FOR bentoclick_anon_viewer_role;  -- SELECT dashboards + dashboards_
 ## Apply order
 
 1. `rbac/anond-service-users.sql` (admin, once per cluster) — the `anond` user.
-2. anond run populates `${META_DB}.identifier_map` on the source.
+2. anond run populates `${SECRET_DB}.identifier_map` on the source.
 3. On the source, as admin: `00-anon-rbac.sql` → `01-token-dict.sql` →
    `02-detok-udf.sql` → `03-dashboards-anon.sql`.
 4. Assign roles to identities: `anon_author_role` to the LLM's MCP CH identity;

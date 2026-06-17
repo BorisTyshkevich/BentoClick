@@ -1,11 +1,12 @@
 -- token_to_real — reverse-anonymization dictionary for the bentoclick
 -- de-tokenizing view.
 --
--- Source of truth is anond's trusted `${META_DB}.identifier_map` (kind,
--- original, token), which a cross-cluster anond run lands on the SOURCE
+-- Source of truth is anond's de-anon secret `${SECRET_DB}.identifier_map`
+-- (kind, original, token), which a cross-cluster anond run lands on the SOURCE
 -- cluster — i.e. this cluster (otel), the one that holds real data and
--- hosts bentoclick. The dictionary exposes only the reverse lookup
--- token -> original.
+-- hosts bentoclick. Both the dictionary and its source live in ${SECRET_DB}
+-- (isolated from the LLM-facing ${META_DB}/registry). The dictionary exposes
+-- only the reverse lookup token -> original.
 --
 -- Dedup by token: HMAC determinism guarantees one `original` per `token`
 -- forever (8-hex collisions are widened to 16-hex at map-build time, so
@@ -27,7 +28,7 @@
 -- credentials server-side, so SHOW CREATE DICTIONARY leaks neither the
 -- password nor any real name (verified on CH 26.3). See docs/RBAC.md.
 
-CREATE DICTIONARY IF NOT EXISTS ${META_DB}.token_to_real
+CREATE DICTIONARY IF NOT EXISTS ${SECRET_DB}.token_to_real
   ON CLUSTER '{cluster}'
 (
     token    String,
@@ -35,6 +36,6 @@ CREATE DICTIONARY IF NOT EXISTS ${META_DB}.token_to_real
 )
 PRIMARY KEY token
 SOURCE(CLICKHOUSE(NAME anon_dict_src QUERY
-  'SELECT token, any(original) AS original FROM ${META_DB}.identifier_map GROUP BY token'))
+  'SELECT token, any(original) AS original FROM ${SECRET_DB}.identifier_map GROUP BY token'))
 LAYOUT(COMPLEX_KEY_HASHED())
 LIFETIME(MIN 300 MAX 600);

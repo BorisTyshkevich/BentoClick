@@ -41,6 +41,10 @@ build/
 *.tar.gz
 *.zip
 
+# Go (anon/ module)
+anon/bin/
+anon/coverage.out
+
 # Local scratch
 todo.md
 

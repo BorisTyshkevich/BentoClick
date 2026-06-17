@@ -17,7 +17,6 @@ package discover
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/Altinity/anon-discovery/internal/classify"
@@ -55,18 +54,6 @@ func sandboxEligible(t *Table) bool {
 // it (REAL names — trusted side), and returns the plans for materialization.
 func (r *Run) writeMaskingPlan(ctx context.Context) ([]*tablePlan, error) {
 	seed := r.Minter.ValueSeed()
-	threshold := r.Cfg.AttrCardThreshold
-	if threshold == 0 {
-		threshold = 64
-	}
-	pat := classify.DefaultPIIKeyPattern
-	if r.Cfg.PIIKeyPattern != "" {
-		pat = "(" + pat + ")|(" + r.Cfg.PIIKeyPattern + ")"
-	}
-	denyRe, derr := regexp.Compile(pat)
-	if derr != nil {
-		return nil, fmt.Errorf("compile PII key pattern: %w", derr)
-	}
 	var plans []*tablePlan
 	var rows [][]*string
 	for _, t := range r.Tables {
@@ -82,26 +69,44 @@ func (r *Run) writeMaskingPlan(ctx context.Context) ([]*tablePlan, error) {
 		for _, c := range t.Columns {
 			class := classify.Classify(c)
 			// Per attrmap column: classify each key (PII denylist + cardinality)
-			// and keep ONLY the vocabulary keys' values real. Manual KeepAttrKeys
-			// is a force-keep override (union). On query failure, fall back to the
-			// manual list (mask everything else).
-			keep := append([]string(nil), r.Cfg.KeepAttrKeys...)
+			// into a role, then build a role-gated mask spec — vocabulary values
+			// kept real, measure values kept iff numeric, identity/sensitive
+			// masked (P1). Custom (non-semconv) key NAMES are tokenized to a
+			// field_<hex> token minted into the identifier map (P3). KeepAttrKeys
+			// is an operator force-keep (treated as vocabulary). On query failure,
+			// the spec stays empty so every value masks (fail-closed).
+			var spec *classify.AttrMaskSpec
 			if class == classify.ClassAttrMap {
-				infos, qerr := r.attrKeyRoles(ctx, t.Database, t.Name, c.Name, threshold, denyRe)
+				ms := classify.AttrMaskSpec{}
+				infos, qerr := r.attrRolesFor(ctx, t.Database, t.Name, c.Name)
 				if qerr != nil {
-					r.Notes = append(r.Notes, fmt.Sprintf("attr-key roles failed for %s.%s.%s: %s (masking non-override values)", t.Database, t.Name, c.Name, firstLine(qerr.Error())))
+					r.Notes = append(r.Notes, fmt.Sprintf("attr-key roles failed for %s.%s.%s: %s (masking all non-override values)", t.Database, t.Name, c.Name, firstLine(qerr.Error())))
 				} else {
-					r.AttrKeyRoles = append(r.AttrKeyRoles, infos...)
-					for _, info := range infos {
-						// keepKeys is the masking allowlist = vocabulary only.
-						// measure values are kept by the numeric rule in MaskExpr.
-						if info.Role == string(classify.RoleVocabulary) {
-							keep = append(keep, info.Key)
+					for i := range infos {
+						switch classify.AttrRole(infos[i].Role) {
+						case classify.RoleVocabulary:
+							ms.VocabKeys = append(ms.VocabKeys, infos[i].Key)
+						case classify.RoleMeasure:
+							ms.MeasureKeys = append(ms.MeasureKeys, infos[i].Key)
+						}
+						if classify.IsSemconvKey(infos[i].Key) {
+							infos[i].KeyOut = infos[i].Key // standard key name kept real
+						} else {
+							ftok, terr := r.tok("field", infos[i].Key)
+							if terr != nil {
+								return nil, terr
+							}
+							infos[i].KeyOut = ftok
+							ms.CustomKeys = append(ms.CustomKeys, infos[i].Key)
+							ms.CustomToks = append(ms.CustomToks, ftok)
 						}
 					}
+					r.AttrKeyRoles = append(r.AttrKeyRoles, infos...)
 				}
+				ms.VocabKeys = append(ms.VocabKeys, r.Cfg.KeepAttrKeys...)
+				spec = &ms
 			}
-			expr, outType, include := classify.MaskExpr(c, class, seed, keep...)
+			expr, outType, include := classify.MaskExpr(c, class, seed, spec)
 			colTok, err := r.tok("col", c.Name)
 			if err != nil {
 				return nil, err
@@ -118,8 +123,9 @@ func (r *Run) writeMaskingPlan(ctx context.Context) ([]*tablePlan, error) {
 		p.OrderBy = sandboxOrderBy(p)
 		plans = append(plans, p)
 	}
-	// trusted side: the plan carries real names + masking expressions → SOURCE
-	if err := r.SrcStore.Insert(ctx, "masking_plan",
+	// de-anon secret: the plan carries real names + masking expressions →
+	// SOURCE secret DB (never the meta/registry DB the LLM can reach)
+	if err := r.SecretStore.Insert(ctx, "masking_plan",
 		[]string{"run_id", "database", "table", "column", "class", "transform", "included"}, rows); err != nil {
 		return nil, err
 	}
