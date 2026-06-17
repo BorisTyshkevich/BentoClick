@@ -55,6 +55,7 @@ type fixture struct {
 	run          *discover.Run
 	ctx          context.Context
 	crossCluster bool
+	seededSrcDB  string // non-empty when the test created the source DB (drop it on cleanup)
 }
 
 // singleClientCmd resolves the clickhouse-client command for the single-cluster
@@ -73,10 +74,51 @@ func singleClientCmd(t *testing.T) string {
 	return ""
 }
 
-// setupSingle: source = dest = the single-cluster client, source DB "git".
+// setupSingle: source = dest = the single-cluster client. Self-seeds a small,
+// representative source DB so the suite is portable (no pre-existing dataset
+// needed) — runs identically locally and in CI.
 func setupSingle(t *testing.T) *fixture {
 	cmd := singleClientCmd(t)
-	return setup(t, cmd, cmd, "git", fmt.Sprintf("anontest_sb_%d", os.Getpid()), false)
+	srcDB := fmt.Sprintf("anontest_src_%d", os.Getpid())
+	seedSource(t, chclient.NewFromString(cmd), srcDB)
+	f := setup(t, cmd, cmd, srcDB, fmt.Sprintf("anontest_sb_%d", os.Getpid()), false)
+	f.seededSrcDB = srcDB
+	return f
+}
+
+// seedSource builds a tiny git-commits-shaped dataset exercising the masking
+// classes: a join key shared across two tables (author_email), a high-card hash
+// (joinkey), free text (redact), names, low-card vocabulary, measures, time.
+func seedSource(t *testing.T, ex chclient.Executor, db string) {
+	t.Helper()
+	ctx := context.Background()
+	stmts := []string{
+		fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", db),
+		fmt.Sprintf("CREATE DATABASE `%s`", db),
+		fmt.Sprintf("CREATE TABLE `%s`.commits ("+
+			"commit_hash String, author_name String, author_email String, "+
+			"message String, added_lines UInt32, repo_name LowCardinality(String), "+
+			"commit_time DateTime) ENGINE = MergeTree ORDER BY commit_time", db),
+		fmt.Sprintf("INSERT INTO `%s`.commits SELECT "+
+			"lower(hex(murmurHash3_128(toString(number)))), concat('author_', toString(number %% 37)), "+
+			"concat('user', toString(number %% 37), '@example.com'), "+
+			"concat('commit message ', toString(number)), toUInt32(number %% 900), "+
+			"['alpha','beta','gamma'][1 + (number %% 3)], now() - toIntervalSecond(number) "+
+			"FROM numbers(3000)", db),
+		fmt.Sprintf("CREATE TABLE `%s`.authors ("+
+			"author_email String, display_name String, commits_count UInt64) "+
+			"ENGINE = MergeTree ORDER BY author_email", db),
+		fmt.Sprintf("INSERT INTO `%s`.authors SELECT "+
+			"concat('user', toString(number), '@example.com'), "+
+			"concat('Author ', toString(number)), toUInt64(number * 7) FROM numbers(37)", db),
+		// make system.query_log exist + flush so the mining phase has input
+		"SYSTEM FLUSH LOGS",
+	}
+	for _, s := range stmts {
+		if err := ex.Exec(ctx, s); err != nil {
+			t.Fatalf("seed source DB %q: %v\n  stmt: %s", db, err, s)
+		}
+	}
 }
 
 // setupCross: source = ANON_TEST_SOURCE_CMD (db ANON_TEST_SOURCE_DB, default
@@ -103,6 +145,7 @@ func setup(t *testing.T, srcCmd, dstCmd, srcDB, destDB string, cross bool) *fixt
 		SourceDB:   srcDB,
 		DestDB:     destDB, // differs from srcDB -> DB name stays tokenized
 		MetaDB:     metaDB,
+		SecretDB:   metaDB, // co-locate the secret in the per-test meta DB (dropped on cleanup)
 		WindowDays: 7,
 		SampleRows: 10_000,
 		HMACKey:    []byte(testKey),
@@ -141,6 +184,11 @@ func (f *fixture) cleanup(t *testing.T) {
 	}
 	if err := f.srcEx.Exec(f.ctx, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", f.metaDB)); err != nil {
 		t.Logf("cleanup source meta: %v", err)
+	}
+	if f.seededSrcDB != "" {
+		if err := f.srcEx.Exec(f.ctx, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", f.seededSrcDB)); err != nil {
+			t.Logf("cleanup seeded source: %v", err)
+		}
 	}
 }
 
