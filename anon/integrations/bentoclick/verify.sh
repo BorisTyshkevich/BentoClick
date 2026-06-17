@@ -5,7 +5,7 @@
 # must return 0; the script exits non-zero if any fails. Run after a sandbox build
 # / RBAC change. Read-only.
 #
-#   CL="cl otel" ANON_ROLE=anon_mcp_reader VIEWER_ROLE=bentoclick_anon_viewer_role \
+#   CL="cl otel" ANON_ROLE=anon_mcp_reader VIEWER_ROLE=bentoclick_viewer_role \
 #   SECRET_DB=bentosecrets ./verify.sh [anon_database ...]
 #
 # Layer note: these probe DEPLOYMENT objects/roles (bentoclick.*, bentosecrets.*,
@@ -14,7 +14,10 @@
 set -uo pipefail
 CL="${CL:-cl otel}"
 ANON_ROLE="${ANON_ROLE:-anon_mcp_reader}"
-VIEWER_ROLE="${VIEWER_ROLE:-bentoclick_anon_viewer_role}"   # created by 00-anon-rbac.sql as ${DB}_anon_viewer_role
+# Human viewer role: stock bentoclick installs use bentoclick_viewer_role; the
+# integration's 00-anon-rbac.sql instead provisions ${DB}_anon_viewer_role —
+# override VIEWER_ROLE if you applied that file.
+VIEWER_ROLE="${VIEWER_ROLE:-bentoclick_viewer_role}"
 SECRET_DB="${SECRET_DB:-bentosecrets}"
 REG_DB="${REG_DB:-bentoclick}"
 DATA_DBS="${DATA_DBS:-claude_otel}"   # real (non-anon) data DBs the anon role must not reach
@@ -23,6 +26,12 @@ ck() { # ck "label" "query-returning-0-for-pass"
   local got; got="$($CL --query "$2" 2>&1)"
   if [ "$got" = "0" ]; then echo "PASS  $1"; else echo "FAIL  $1  (got: $got)"; fail=1; fi
 }
+
+echo "== 0. probed roles exist (else grant-count probes pass vacuously) =="
+for r in "${ANON_ROLE}" "${VIEWER_ROLE}"; do
+  got="$($CL --query "SELECT count() FROM system.roles WHERE name='$r'" 2>&1)"
+  if [ "$got" = "1" ]; then echo "PASS  role '$r' exists"; else echo "FAIL  role '$r' not found (got: $got) — its isolation probes would pass vacuously"; fail=1; fi
+done
 
 echo "== A. anon role isolation: no grant on the de-anon secret or real data =="
 ck "anon role no SELECT on ${SECRET_DB}.*" \
