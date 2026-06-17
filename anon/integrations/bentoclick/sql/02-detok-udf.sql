@@ -50,7 +50,7 @@ CREATE FUNCTION detok AS (s) ->
       (acc, tok) -> replaceRegexpAll(
                       acc,
                       concat('\\b', tok, '\\b'),
-                      dictGetOrDefault('${META_DB}.token_to_real', 'original', tuple(tok), tok)),
+                      dictGetOrDefault('${SECRET_DB}.token_to_real', 'original', tuple(tok), tok)),
       arrayDistinct(extractAll(
         s,
         '(?:db|tbl|col|user|role|dict|cluster|disk|host|sql|field|enum)_[0-9a-f]{8,16}')),

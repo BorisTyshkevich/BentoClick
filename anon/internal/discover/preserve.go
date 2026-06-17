@@ -116,9 +116,10 @@ func (r *Run) executePreserve(ctx context.Context) error {
 		return nil
 	}
 
-	// secret store (identifier_map + masking_plan) and the LLM-facing registry.
-	secret := store.New(r.SrcEx, r.Cfg.SecretDB)
-	if err := secret.InitTrusted(ctx); err != nil {
+	// de-anon secret store (identifier_map + masking_plan) and the LLM-facing
+	// registry. Both anond models write the secret to r.SecretStore (SecretDB),
+	// never the meta/registry DB — see NewRun.
+	if err := r.SecretStore.InitTrusted(ctx); err != nil {
 		return err
 	}
 	reg := store.New(r.DstEx, r.Cfg.RegistryDB)
@@ -178,12 +179,12 @@ func (r *Run) executePreserve(ctx context.Context) error {
 		}
 	}
 	if len(allMints) > 0 {
-		if err := secret.Insert(ctx, "identifier_map", []string{"run_id", "kind", "original", "token"}, allMints); err != nil {
+		if err := r.SecretStore.Insert(ctx, "identifier_map", []string{"run_id", "kind", "original", "token"}, allMints); err != nil {
 			return err
 		}
 	}
 	if len(maskRows) > 0 {
-		if err := secret.Insert(ctx, "masking_plan",
+		if err := r.SecretStore.Insert(ctx, "masking_plan",
 			[]string{"run_id", "database", "table", "column", "class", "transform", "included"}, maskRows); err != nil {
 			return err
 		}

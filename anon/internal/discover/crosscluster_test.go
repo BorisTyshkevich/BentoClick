@@ -137,6 +137,57 @@ func TestSchemaGuideWritesBackingDataTables(t *testing.T) {
 	}
 }
 
+// TestSecretWritesTargetSecretDB guards the trust boundary: the de-anon secret
+// (identifier_map, masking_plan) must be written to the dedicated SecretDB, never
+// the MetaDB/RegistryDB that backs the LLM-facing read path. Regression for the
+// tokenizing model co-locating the secret in MetaDB (run.go) while the
+// schema-preserving model correctly used SecretDB (preserve.go) — see M1.
+func TestSecretWritesTargetSecretDB(t *testing.T) {
+	src := &fakeExec{}
+	r, err := NewRun(testCfg("biz", "biz_anon"), src, &fakeExec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// SecretStore must point at SecretDB, not MetaDB (the LLM-facing meta/registry DB).
+	if r.SecretStore.MetaDB != r.Cfg.SecretDB {
+		t.Fatalf("SecretStore DB = %q, want SecretDB %q", r.SecretStore.MetaDB, r.Cfg.SecretDB)
+	}
+	if r.Cfg.SecretDB == r.Cfg.MetaDB {
+		t.Fatalf("SecretDB %q must differ from MetaDB %q", r.Cfg.SecretDB, r.Cfg.MetaDB)
+	}
+
+	tbl := &Table{Database: "biz", Name: "events",
+		Columns: []classify.Column{{Name: "event_time", Type: "DateTime"}}}
+	r.Tables = []*Table{tbl}
+	r.byFull[tbl.Full()] = tbl
+	if err := r.observe(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.IdMap.Build(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.writeMaskingPlan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	wantTarget := "`" + r.Cfg.SecretDB + "`.`masking_plan`"
+	badTarget := "`" + r.Cfg.MetaDB + "`.`masking_plan`"
+	var sawWant, sawBad bool
+	for _, tg := range src.insertTargets {
+		if tg == wantTarget {
+			sawWant = true
+		}
+		if tg == badTarget {
+			sawBad = true
+		}
+	}
+	if !sawWant {
+		t.Errorf("masking_plan was not written to the SecretDB %q; insert targets: %v", wantTarget, src.insertTargets)
+	}
+	if sawBad {
+		t.Errorf("masking_plan written to the MetaDB %q (de-anon secret leaked into the LLM-facing meta DB)", badTarget)
+	}
+}
+
 func TestNewRunDefaults(t *testing.T) {
 	r, err := NewRun(testCfg("biz", ""), &fakeExec{}, &fakeExec{})
 	if err != nil {

@@ -84,8 +84,8 @@ type Run struct {
 	SrcEx chclient.Executor // discovery, mining, masking SELECTs (real names stay here)
 	DstEx chclient.Executor // sandbox objects + tokens-only profile
 
-	SrcStore *store.Store // trusted tables (identifier_map, masking_plan) on the source meta DB
-	DstStore *store.Store // profile tables + registry + manifest on the dest meta DB
+	SecretStore *store.Store // de-anon secret (identifier_map, masking_plan) on the source SECRET DB
+	DstStore    *store.Store // profile tables + registry + manifest on the dest meta DB
 
 	RunID    string
 	Version  string
@@ -268,7 +268,7 @@ func NewRun(cfg Config, src, dst chclient.Executor) (*Run, error) {
 	}
 	return &Run{
 		Cfg: cfg, SrcEx: src, DstEx: dst,
-		SrcStore:    store.New(src, cfg.MetaDB),
+		SecretStore: store.New(src, cfg.SecretDB),
 		DstStore:    store.New(dst, cfg.MetaDB),
 		Shape:       map[string]string{},
 		byFull:      map[string]*Table{},
@@ -288,7 +288,7 @@ func (r *Run) Execute(ctx context.Context) error {
 	log := r.Cfg.Log
 
 	if !r.Cfg.DryRun {
-		if err := r.SrcStore.InitTrusted(ctx); err != nil {
+		if err := r.SecretStore.InitTrusted(ctx); err != nil {
 			return err
 		}
 		if err := r.DstStore.InitProfile(ctx); err != nil {
@@ -529,14 +529,15 @@ func b8(v bool) *string {
 }
 
 // writeProfile emits all tokenized profile rows (dest) plus the identifier
-// map (source — trusted side only).
+// map (source — de-anon secret only).
 func (r *Run) writeProfile(ctx context.Context) error {
-	// identifier_map (trusted side: SOURCE meta DB only)
+	// identifier_map (de-anon secret: SOURCE secret DB only, never the meta/
+	// registry DB the LLM-facing read path lives in)
 	var mapRows [][]*string
 	for _, p := range r.IdMap.Pairs() {
 		mapRows = append(mapRows, []*string{chclient.S(r.RunID), chclient.S(p[0]), chclient.S(p[1]), chclient.S(p[2])})
 	}
-	if err := r.SrcStore.Insert(ctx, "identifier_map", []string{"run_id", "kind", "original", "token"}, mapRows); err != nil {
+	if err := r.SecretStore.Insert(ctx, "identifier_map", []string{"run_id", "kind", "original", "token"}, mapRows); err != nil {
 		return err
 	}
 

@@ -123,8 +123,9 @@ func (r *Run) writeMaskingPlan(ctx context.Context) ([]*tablePlan, error) {
 		p.OrderBy = sandboxOrderBy(p)
 		plans = append(plans, p)
 	}
-	// trusted side: the plan carries real names + masking expressions → SOURCE
-	if err := r.SrcStore.Insert(ctx, "masking_plan",
+	// de-anon secret: the plan carries real names + masking expressions →
+	// SOURCE secret DB (never the meta/registry DB the LLM can reach)
+	if err := r.SecretStore.Insert(ctx, "masking_plan",
 		[]string{"run_id", "database", "table", "column", "class", "transform", "included"}, rows); err != nil {
 		return nil, err
 	}

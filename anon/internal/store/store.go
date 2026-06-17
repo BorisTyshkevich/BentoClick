@@ -95,8 +95,9 @@ var ddl = map[string]string{
 }
 
 // TrustedTables hold REAL names — they de-anonymize everything and therefore
-// live ONLY on the SOURCE cluster's meta DB, never on the cluster the LLM can
-// reach.
+// live ONLY on the SOURCE cluster's dedicated SECRET DB (SecretDB, e.g.
+// bentosecrets), never on the meta/registry DB the LLM-facing read path uses
+// and never on the cluster the LLM can reach.
 var TrustedTables = []string{"identifier_map", "masking_plan"}
 
 // ProfileTables hold tokens (plus the registry and the manifest) — these live

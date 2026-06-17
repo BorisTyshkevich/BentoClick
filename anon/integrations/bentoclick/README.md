@@ -74,12 +74,14 @@ Apply on otel, in order, on top of a stock bentoclick install:
 
 | File | Object | Purpose |
 |---|---|---|
-| `sql/01-token-dict.sql` | `${META_DB}.token_to_real` dictionary | reverse map `token → original`, sourced from anond's `${META_DB}.identifier_map`; `COMPLEX_KEY_HASHED`, monotonic `LIFETIME` reload |
+| `sql/01-token-dict.sql` | `${SECRET_DB}.token_to_real` dictionary | reverse map `token → original`, sourced from anond's `${SECRET_DB}.identifier_map`; `COMPLEX_KEY_HASHED`, monotonic `LIFETIME` reload |
 | `sql/02-detok-udf.sql` | `detok(s)` UDF | word-substitution expand of every token in a text blob via the dictionary, then remap the sandbox DB qualifier `<real>_anon.` → `<real>.` |
 | `sql/03-dashboards-anon.sql` | `dashboards_tok` table, re-pointed `dashboards_mv`, `dashboards` de-tok view, grants | the storage-split rewiring |
 
-`${DB}` = dashboard database (e.g. `bentoclick`), `${META_DB}` = anond meta
-DB holding the map (`altinity`).
+`${DB}` = dashboard database (e.g. `bentoclick`), `${META_DB}` = anond meta +
+LLM-facing registry DB (e.g. `bentoclick`), `${SECRET_DB}` = the de-anon secret
+DB holding `identifier_map` + the `token_to_real` dict (e.g. `bentosecrets`),
+kept isolated from any "read all dashboards" grant.
 
 ### detok — word-substitution, not parsing
 
@@ -129,7 +131,7 @@ token spec and the de-tok output identically.
 
 ## What feeds the dictionary
 
-`token_to_real` reads `${META_DB}.identifier_map`, which a cross-cluster
+`token_to_real` reads `${SECRET_DB}.identifier_map`, which a cross-cluster
 anond run lands on the source side (otel) — already in place from
 `anond run --source "cl otel" --source-db claude_otel --dest "… demo" …`.
 In production, whatever keeps `identifier_map` fresh (the anond CLI now; the
