@@ -293,7 +293,8 @@ func (r *Run) writeSchemaGuideTokenizing(ctx context.Context) error {
 			return err
 		}
 	}
-	// attr_guide: token db/table/col, real attr key, role + usage.
+	// attr_guide: token db/table/col, sandbox attr key (semconv real / custom
+	// tokenized), role + usage.
 	var aRows [][]*string
 	for _, a := range r.AttrKeyRoles {
 		tblTok, err := r.tok("tbl", a.Table)
@@ -305,7 +306,7 @@ func (r *Run) writeSchemaGuideTokenizing(ctx context.Context) error {
 			return err
 		}
 		aRows = append(aRows, []*string{
-			s(r.RunID), s(anonDB), s(tblTok), s(colTok), s(a.Key), s(a.Role), s(attrUsage(a.Role)),
+			s(r.RunID), s(anonDB), s(tblTok), s(colTok), s(a.outKey()), s(a.Role), s(attrUsage(a.Role)),
 		})
 	}
 	if len(aRows) > 0 {

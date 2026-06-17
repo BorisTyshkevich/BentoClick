@@ -157,10 +157,50 @@ func nullWrap(nullable bool, col, expr string) string {
 	return fmt.Sprintf("if(isNull(%s), NULL, %s)", col, expr)
 }
 
+// semconvKeyPattern matches OpenTelemetry semantic-convention attribute KEY
+// namespaces (dot-separated, a public standard) whose NAMES are safe to keep
+// real. Custom (non-semconv) keys are tokenized instead (P3) so internal
+// product/customer/feature names don't leak. Extensible.
+const semconvKeyPattern = `^(service|telemetry|otel|http|db|rpc|messaging|network|net|url|server|client|source|destination|exception|code|thread|process|host|os|cloud|k8s|container|faas|event|session|enduser|user|peer|gen_ai|error|deployment|device|browser|feature_flag|log|span|trace)\.`
+
+var semconvKeyRe = regexp.MustCompile(`(?i)` + semconvKeyPattern)
+
+// IsSemconvKey reports whether an attribute key name is a known OTel
+// semantic-convention key (kept real); everything else is custom (tokenized).
+func IsSemconvKey(key string) bool { return semconvKeyRe.MatchString(key) }
+
+// sqlLit escapes a string for a single-quoted ClickHouse literal.
+func sqlLit(s string) string { return "'" + strings.ReplaceAll(s, "'", `\'`) + "'" }
+
+// sqlInList renders a comma-separated quoted IN-list (empty -> "").
+func sqlInList(ks []string) string {
+	if len(ks) == 0 {
+		return ""
+	}
+	qs := make([]string, len(ks))
+	for i, k := range ks {
+		qs[i] = sqlLit(k)
+	}
+	return strings.Join(qs, ", ")
+}
+
+// AttrMaskSpec carries the per-key info MaskExpr needs to mask an attrmap column
+// role-awarely (P1) and tokenize custom keys (P3). All slices hold REAL key names
+// observed during discovery; CustomToks is parallel to CustomKeys (each custom
+// key's field_<hex> token, minted by the caller into the identifier map so the
+// human report can de-tokenize it). A nil spec masks every value (fail-closed).
+type AttrMaskSpec struct {
+	VocabKeys   []string // value kept real (low-card vocabulary)
+	MeasureKeys []string // value kept real IFF numeric
+	CustomKeys  []string // non-semconv key names to tokenize
+	CustomToks  []string // parallel field_<hex> tokens for CustomKeys
+}
+
 // MaskExpr returns the SELECT expression and the sandbox column type for one
 // column. include=false means the column is excluded (fail closed).
 // seed is the trusted-side value seed (never leaves the INSERT...SELECT).
-func MaskExpr(c Column, class Class, seed uint64, keepAttrKeys ...string) (expr, outType string, include bool) {
+// attr is required (non-nil) for ClassAttrMap and ignored otherwise.
+func MaskExpr(c Column, class Class, seed uint64, attr *AttrMaskSpec) (expr, outType string, include bool) {
 	q := quoteIdent(c.Name)
 	_, nullable, lowCard := unwrap(c.Type)
 	nn := q
@@ -196,31 +236,47 @@ func MaskExpr(c Column, class Class, seed uint64, keepAttrKeys ...string) (expr,
 	case ClassFreeText:
 		return "'[redacted]'", maybeNullable("String"), true
 	case ClassAttrMap:
-		// Keys pass through verbatim: the vocabulary is OTel semconv, but
-		// custom key names also pass through unmasked — that residual is
-		// accepted and documented at the call site. Values keep numerics,
-		// booleans and empties (analytically load-bearing, low identifying
-		// power); everything else becomes a 12-hex keyed-hash token — EXCEPT
-		// values under an operator-approved keepAttrKeys allowlist. Those are
-		// low-cardinality categorical VOCABULARY (e.g. event.name, model) that
-		// the LLM filters/groups on and the human must see de-anonymized; the
-		// list is an explicit allowlist (NOT cardinality-derived) so identifying
-		// keys like user.id / organization are never auto-exposed.
+		// Role-gated value masking (P1) + custom-key tokenization (P3).
+		//   VALUE kept real only for a vocabulary key, or a measure key whose
+		//   value is numeric. identity/sensitive AND unknown keys -> hashed (even
+		//   numeric/bool/empty), so an identity key like user.id='12345' can't leak.
+		//   KEY kept real only when it is a known OTel semconv key; observed custom
+		//   keys map to their field_<hex> token (de-tokenizable for the human); any
+		//   unobserved non-semconv key collapses to a sentinel so its name never
+		//   leaks. A nil/empty spec masks every value (fail-closed).
 		keyType, _ := attrMapKey(c.Type)
-		keepCond, lambda, keysArg := "", "v -> ", ""
-		if len(keepAttrKeys) > 0 {
-			quoted := make([]string, len(keepAttrKeys))
-			for i, k := range keepAttrKeys {
-				quoted[i] = "'" + strings.ReplaceAll(k, "'", `\'`) + "'"
-			}
-			keepCond = "k IN (" + strings.Join(quoted, ", ") + ") OR "
-			lambda = "(k, v) -> "
-			keysArg = "mapKeys(" + q + "), "
+		if attr == nil {
+			attr = &AttrMaskSpec{}
 		}
-		masked := fmt.Sprintf(
-			"if(%smatch(v, '^-?[0-9.]+$') OR v IN ('true', 'false') OR v = '', v, substring(lower(hex(%s)), 1, 12))",
-			keepCond, hash("v"))
-		return fmt.Sprintf("mapFromArrays(mapKeys(%s), arrayMap(%s%s, %smapValues(%s)))", q, lambda, masked, keysArg, q),
+		numRe := strings.ReplaceAll(MeasureValueSQL, `\`, `\\`)
+		var keep []string
+		if s := sqlInList(attr.VocabKeys); s != "" {
+			keep = append(keep, "k IN ("+s+")")
+		}
+		if s := sqlInList(attr.MeasureKeys); s != "" {
+			keep = append(keep, "(k IN ("+s+") AND match(v, '"+numRe+"'))")
+		}
+		keepPred := "0" // nothing kept -> every value hashed
+		if len(keep) > 0 {
+			keepPred = strings.Join(keep, " OR ")
+		}
+		valExpr := fmt.Sprintf(
+			"arrayMap((k, v) -> if(%s, v, substring(lower(hex(%s)), 1, 12)), mapKeys(%s), mapValues(%s))",
+			keepPred, hash("v"), q, q)
+		semconvLit := sqlLit("(?i)" + strings.ReplaceAll(semconvKeyPattern, `\`, `\\`))
+		keepKeyDefault := fmt.Sprintf("if(match(k, %s), k, 'field_redacted')", semconvLit)
+		var keyExpr string
+		if len(attr.CustomKeys) > 0 {
+			toks := make([]string, len(attr.CustomToks))
+			for i, t := range attr.CustomToks {
+				toks[i] = sqlLit(t)
+			}
+			keyExpr = fmt.Sprintf("arrayMap(k -> transform(k, [%s], [%s], %s), mapKeys(%s))",
+				sqlInList(attr.CustomKeys), strings.Join(toks, ", "), keepKeyDefault, q)
+		} else {
+			keyExpr = fmt.Sprintf("arrayMap(k -> %s, mapKeys(%s))", keepKeyDefault, q)
+		}
+		return fmt.Sprintf("mapFromArrays(%s, %s)", keyExpr, valExpr),
 			fmt.Sprintf("Map(%s, String)", keyType), true
 	default: // ClassSchemaless
 		return "", "", false
@@ -253,10 +309,13 @@ const (
 // It deliberately targets only what cardinality would otherwise wrongly keep:
 //   - substrings for unambiguous PII words (email/account/organization/secret/…)
 //   - boundary-gated segments for the short ambiguous ones (user/id/ip/org)
-// It does NOT list 'token'/'auth'/'session': those over-match numeric measures
+// It does NOT list bare 'token'/'auth': those over-match numeric measures
 // (output_tokens, cache_read_tokens) and vocabulary (auth_method); real secrets
 // are high-cardinality and fall to RoleSensitive (also masked) on their own.
-const DefaultPIIKeyPattern = `(?i)(email|account|organization|secret|passw|cookie|uuid|guid|hostname)|(^|[._-])(user|id|ip|org)([._-]|$)`
+// Bare-numeric-named identity keys (account/customer/tenant/zip/phone…) are
+// forced to identity here even when their values are numeric, so the per-key
+// role gate in MaskExpr masks them despite the numeric-keep rule.
+const DefaultPIIKeyPattern = `(?i)(email|phone|ssn|passw|secret|credential|cookie|apikey|api[._-]?key|access[._-]?key|authorization|bearer|uuid|guid|hostname|account|organization|tenant|customer|workspace|zip|postal|address|latitude|longitude|geo|fingerprint)|(^|[._-])(user|id|ip|org|sid|session)([._-]|$)`
 
 // measureValueRe (strict): a pure number with at most one decimal point — so a
 // dotted version string like "10.0.26200" is NOT treated as a measure.

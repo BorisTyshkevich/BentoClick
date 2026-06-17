@@ -117,11 +117,22 @@ type Run struct {
 
 // AttrKeyInfo is one attribute-map key's classification: real names + role +
 // the value-cardinality it was decided from, and whether its value is kept real.
+// KeyOut is the SANDBOX key name (real for semconv, field_<hex> token for custom).
 type AttrKeyInfo struct {
 	DB, Table, Column, Key string
 	Role                   string
 	Cardinality            uint64
 	Kept                   bool
+	KeyOut                 string
+}
+
+// outKey returns the sandbox/profile key name — the tokenized KeyOut when set,
+// else the real key (defensive fallback).
+func (a AttrKeyInfo) outKey() string {
+	if a.KeyOut != "" {
+		return a.KeyOut
+	}
+	return a.Key
 }
 
 // attrKeyRoles scans one attrmap column's keys on the SOURCE and classifies each
@@ -529,7 +540,7 @@ func (r *Run) writeProfile(ctx context.Context) error {
 				return err
 			}
 			class := classify.Classify(c)
-			_, _, include := classify.MaskExpr(c, class, 0)
+			_, _, include := classify.MaskExpr(c, class, 0, nil)
 			colRows = append(colRows, []*string{
 				chclient.S(r.RunID), chclient.S(dbTok), chclient.S(tblTok), chclient.S(colTok),
 				u64s(uint64(i + 1)), chclient.S(r.Rw.Rewrite(c.Type, false)), chclient.S(string(class)),
@@ -550,8 +561,9 @@ func (r *Run) writeProfile(ctx context.Context) error {
 		return err
 	}
 
-	// profile_attr_keys — per-attrmap-key roles (tokens for db/table/col; the
-	// attribute KEY itself is real, as it is in the sandbox tables).
+	// profile_attr_keys — per-attrmap-key roles (tokens for db/table/col). The
+	// attribute KEY is the SANDBOX key: real for semconv keys, the field_<hex>
+	// token for custom keys (so the LLM never sees a custom key name).
 	var attrRows [][]*string
 	for _, a := range r.AttrKeyRoles {
 		dbTok, err := r.tok("db", a.DB)
@@ -568,7 +580,7 @@ func (r *Run) writeProfile(ctx context.Context) error {
 		}
 		attrRows = append(attrRows, []*string{
 			s(r.RunID), s(dbTok), s(tblTok), s(colTok),
-			s(a.Key), s(a.Role), s(strconv.FormatUint(a.Cardinality, 10)), b8x(a.Kept),
+			s(a.outKey()), s(a.Role), s(strconv.FormatUint(a.Cardinality, 10)), b8x(a.Kept),
 		})
 	}
 	if len(attrRows) > 0 {

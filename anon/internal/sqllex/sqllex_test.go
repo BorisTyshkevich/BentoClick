@@ -218,3 +218,33 @@ func TestUnqualifiedColumnProbeOrder(t *testing.T) {
 		t.Errorf("qualified name must resolve db.tbl: %s", out)
 	}
 }
+
+// TestUnknownFunctionTokenized (P4): a user-defined / unknown function name is
+// observed and tokenized (fail-closed); a known CH function (in the keep
+// registry) is preserved. Guards against a sensitive UDF/object name surviving.
+func TestUnknownFunctionTokenized(t *testing.T) {
+	_, rw := fixture(t)
+	words := rw.IdentifierWords("SELECT custom_secret_fn(order_id), toDate(created_at)")
+	sawUDF, sawKnown := false, false
+	for _, w := range words {
+		if w == "custom_secret_fn" {
+			sawUDF = true
+		}
+		if w == "toDate" {
+			sawKnown = true
+		}
+	}
+	if !sawUDF {
+		t.Errorf("unknown function name must be observed for tokenization: %v", words)
+	}
+	if sawKnown {
+		t.Errorf("known CH function must not be observed as an identifier: %v", words)
+	}
+	out := rw.Rewrite("SELECT toDate(created_at), custom_secret_fn(order_id) FROM shop.orders", false)
+	if strings.Contains(out, "custom_secret_fn") {
+		t.Errorf("unknown UDF name must be tokenized/redacted, not survive: %s", out)
+	}
+	if !strings.Contains(out, "toDate(") {
+		t.Errorf("known CH function must be kept: %s", out)
+	}
+}

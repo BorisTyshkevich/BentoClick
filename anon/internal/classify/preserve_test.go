@@ -13,6 +13,11 @@ func TestClassifyPreserve(t *testing.T) {
 		{"query", "String", false, map[string]string{"query": "redact"}, "redact"}, // override
 		{"ProfileEvents", "Map(LowCardinality(String), UInt64)", false, nil, "keep"},
 		{"Settings", "Map(String, String)", false, nil, "keep"},
+		{"replica_is_active", "Map(String, UInt8)", false, nil, "keep"},               // allowlisted CH-internal map
+		{"asynchronous_read_counters", "Map(String, UInt64)", false, nil, "keep"},     // allowlisted
+		{"parts_postpone_reasons", "Map(String, String)", false, nil, "redact"},       // generic Map → fail-closed
+		{"custom_attrs", "Map(String, String)", false, nil, "redact"},                 // generic Map → fail-closed
+		{"custom_attrs", "Map(String, String)", false, map[string]string{"custom_attrs": "keep"}, "keep"}, // operator override
 		{"query_duration_ms", "UInt64", false, nil, "keep"},
 		{"event_time", "DateTime", false, nil, "keep"},
 		{"type", "Enum8('a' = 1)", false, nil, "keep"},
