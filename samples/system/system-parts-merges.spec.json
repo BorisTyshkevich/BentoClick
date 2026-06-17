@@ -1,0 +1,56 @@
+{
+  "title": "ClickHouse Parts & Merges",
+  "subtitle": "Part lifecycle from part_log plus the current parts snapshot. Table names are de-anonymized for the reader; part names and partition values stay masked. Micro-batching and merge storms surface here first.",
+  "spec_version": 1,
+  "concurrent": true,
+  "panels": [
+    {
+      "id": "intro", "type": "markdown", "width": 12,
+      "text": "## Why parts matter\nEvery insert creates a part; merges fold parts together in the background. Too many small parts (micro-batching) inflates metadata and merge load; too few large merges can stall. This view mirrors the *clickhouse-part-log* and *clickhouse-merges* skills: the event mix tells you whether writes are well-batched, and the per-table ranking points at the tables driving merge pressure."
+    },
+    {
+      "id": "kpis", "type": "kpi-strip", "width": 12,
+      "query": "SELECT (SELECT count() FROM system_anon.parts WHERE active) AS active_parts, countIf(event_type = 'NewPart') AS new_parts, countIf(event_type = 'MergeParts') AS merges, round(avgIf(duration_ms, event_type = 'MergeParts')) AS avg_merge_ms FROM system_anon.part_log WHERE event_date > today() - 7",
+      "tiles": [
+        { "key": "active_parts", "label": "Active parts (now)", "format": "num" },
+        { "key": "new_parts", "label": "New parts (7d)", "format": "num" },
+        { "key": "merges", "label": "Merges (7d)", "format": "num" },
+        { "key": "avg_merge_ms", "label": "Avg merge ms", "format": "num" }
+      ]
+    },
+    {
+      "id": "event_mix", "type": "bars", "width": 6, "title": "Part event mix (7d)",
+      "query": "SELECT event_type AS label, count() AS n FROM system_anon.part_log WHERE event_date > today() - 7 GROUP BY label ORDER BY n DESC",
+      "label_key": "label", "value_key": "n"
+    },
+    {
+      "id": "daily", "type": "line", "width": 6, "title": "New parts vs merges by day",
+      "query": "SELECT toDate(event_time) AS day, countIf(event_type = 'NewPart') AS new_parts, countIf(event_type = 'MergeParts') AS merges FROM system_anon.part_log WHERE event_date > today() - 14 GROUP BY day ORDER BY day",
+      "x_key": "day",
+      "series": [
+        { "key": "new_parts", "label": "New parts" },
+        { "key": "merges", "label": "Merges" }
+      ]
+    },
+    {
+      "id": "by_table", "type": "table", "width": 12, "title": "Tables driving part activity (7d)",
+      "query": "SELECT table AS tbl, countIf(event_type = 'NewPart') AS new_parts, countIf(event_type = 'MergeParts') AS merges, round(avgIf(duration_ms, event_type = 'MergeParts')) AS avg_merge_ms, round(merges / nullIf(new_parts, 0), 2) AS merge_ratio FROM system_anon.part_log WHERE event_date > today() - 7 AND notEmpty(table) GROUP BY tbl ORDER BY new_parts DESC LIMIT 12",
+      "columns": [
+        { "key": "tbl", "label": "Table" },
+        { "key": "new_parts", "label": "New parts", "format": "num", "align": "right" },
+        { "key": "merges", "label": "Merges", "format": "num", "align": "right" },
+        { "key": "avg_merge_ms", "label": "Avg merge ms", "format": "num", "align": "right" },
+        { "key": "merge_ratio", "label": "Merge / new", "format": "num", "align": "right" }
+      ]
+    },
+    {
+      "id": "top_tables", "type": "dataset", "width": 12,
+      "query": "SELECT table AS tbl, countIf(event_type = 'NewPart') AS new_parts, countIf(event_type = 'MergeParts') AS merges FROM system_anon.part_log WHERE event_date > today() - 7 AND notEmpty(table) GROUP BY tbl ORDER BY new_parts DESC LIMIT 3"
+    },
+    {
+      "id": "table_story", "type": "callouts", "width": 12, "title": "Heaviest tables",
+      "anchor": "top_tables", "rows": "all",
+      "template": "**{{tbl}}** created {{new_parts|num!}} parts and ran {{merges|num}} merges in the last 7 days. A high new-part count with few merges suggests inserts are arriving in small batches — the classic micro-batching signal."
+    }
+  ]
+}

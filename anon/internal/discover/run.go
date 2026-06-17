@@ -57,8 +57,27 @@ type Config struct {
 	PIIKeyPattern string
 	HMACKey       []byte
 	DryRun        bool
-	Log           func(format string, args ...any)
+	// Model selects the anonymization model: "tokenizing" (default — token
+	// table/column names, masked values) or "schema-preserving" (real names,
+	// masked values; for well-known schemas domain tools query by real schema).
+	Model string
+	// SecretDB holds the de-anon secret (identifier_map, masking_plan,
+	// token_to_real). Default "bentosecrets". Never granted to the anon role.
+	SecretDB string
+	// RegistryDB holds the LLM-facing schema_guide/attr_guide registry both
+	// models write. Default "bentoclick".
+	RegistryDB string
+	// ColumnOverrides (schema-preserving only) forces a column's class:
+	// table -> column -> "keep"|"tok:<kind>"|"hash:<kind>"|"redact"|"drop".
+	// The operator's escape hatch; keeps schema-specific policy out of anond.
+	ColumnOverrides map[string]map[string]string
+	Log             func(format string, args ...any)
 }
+
+const (
+	ModelTokenizing       = "tokenizing"
+	ModelSchemaPreserving = "schema-preserving"
+)
 
 type Run struct {
 	Cfg   Config
@@ -151,8 +170,20 @@ func NewRun(cfg Config, src, dst chclient.Executor) (*Run, error) {
 	if cfg.SourceDB == "" {
 		return nil, fmt.Errorf("discover: SourceDB is required")
 	}
+	if cfg.Model == "" {
+		cfg.Model = ModelTokenizing
+	}
+	if cfg.Model != ModelTokenizing && cfg.Model != ModelSchemaPreserving {
+		return nil, fmt.Errorf("discover: unknown --model %q (want %s|%s)", cfg.Model, ModelTokenizing, ModelSchemaPreserving)
+	}
 	if cfg.DestDB == "" {
-		cfg.DestDB = cfg.SourceDB
+		// schema-preserving follows the <db>_anon sandbox convention; tokenizing
+		// keeps the disclose-the-name default (dest = source).
+		if cfg.Model == ModelSchemaPreserving {
+			cfg.DestDB = cfg.SourceDB + "_anon"
+		} else {
+			cfg.DestDB = cfg.SourceDB
+		}
 	}
 	if cfg.WindowDays <= 0 {
 		cfg.WindowDays = 7
@@ -161,7 +192,16 @@ func NewRun(cfg Config, src, dst chclient.Executor) (*Run, error) {
 		cfg.SampleRows = 1_000_000
 	}
 	if cfg.MetaDB == "" {
-		cfg.MetaDB = "altinity"
+		// anond's internal discovery meta (profile_*, generated_objects, manifest)
+		// lives alongside the LLM-facing registry in `bentoclick`. The legacy
+		// `altinity` DB now holds only unrelated MCP OAuth state.
+		cfg.MetaDB = "bentoclick"
+	}
+	if cfg.SecretDB == "" {
+		cfg.SecretDB = "bentosecrets"
+	}
+	if cfg.RegistryDB == "" {
+		cfg.RegistryDB = "bentoclick"
 	}
 	if cfg.DestDB == cfg.MetaDB {
 		return nil, fmt.Errorf("discover: DestDB %q collides with the meta DB", cfg.DestDB)
@@ -187,6 +227,9 @@ func NewRun(cfg Config, src, dst chclient.Executor) (*Run, error) {
 
 // Execute runs the whole pipeline.
 func (r *Run) Execute(ctx context.Context) error {
+	if r.Cfg.Model == ModelSchemaPreserving {
+		return r.executePreserve(ctx)
+	}
 	r.started = time.Now().UTC()
 	r.RunID = fmt.Sprintf("run-%s", r.started.Format("20060102-150405"))
 	log := r.Cfg.Log
@@ -260,6 +303,10 @@ func (r *Run) Execute(ctx context.Context) error {
 	}
 	log("write: profile tables")
 	if err := r.writeProfile(ctx); err != nil {
+		return err
+	}
+	log("write: schema_guide registry")
+	if err := r.writeSchemaGuideTokenizing(ctx); err != nil {
 		return err
 	}
 	log("verify")

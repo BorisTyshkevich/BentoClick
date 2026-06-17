@@ -63,7 +63,7 @@ artifacts per release:
 | Asset | Use |
 |---|---|
 | `bentoclick-<version>.tar.gz` | Install distro — `install.sh` + schema + runtime + handlers + config templates + samples. |
-| `bentoclick-dashboard-skill-<version>.zip` | Agent skill — `SKILL.md` + 11 panel reference docs. Upload to a claude.ai personal connector. |
+| `bentoclick-skill-<version>.zip` | Agent skill — `SKILL.md` + 11 panel reference docs. Upload to a claude.ai personal connector. |
 
 See [releases/tag/v0.1.0](https://github.com/BorisTyshkevich/BentoClick/releases/tag/v0.1.0).
 
@@ -102,7 +102,7 @@ bentoclick/
 ├── runtime/v1/         # SPA shell + ES-module runtime for spec_version=1
 ├── config/             # config.json / client.json templates
 ├── samples/            # 5 sample spec JSON files
-├── skills/bentoclick-dashboard/   # Claude skill (SKILL.md + panels/*.md)
+├── skills/bentoclick/     # Claude skill (SKILL.md + panels/*.md)
 ├── docs/               # SPEC_VERSIONING, SANITIZATION, TESTING
 └── tests/              # pytest (schema) + vitest (runtime) + e2e
 ```
@@ -114,13 +114,13 @@ release asset:
 
 ```bash
 # dev: track main
-ln -s "$(pwd)/skills/bentoclick-dashboard" \
-      ~/.claude/skills/bentoclick-dashboard
+ln -s "$(pwd)/skills/bentoclick" \
+      ~/.claude/skills/bentoclick
 
 # release: unzip the published artifact
 cd ~/.claude/skills && \
-  curl -L https://github.com/BorisTyshkevich/BentoClick/releases/download/v0.1.0/bentoclick-dashboard-skill-0.1.0.zip -O && \
-  unzip bentoclick-dashboard-skill-0.1.0.zip
+  curl -L https://github.com/BorisTyshkevich/BentoClick/releases/download/v0.1.0/bentoclick-skill-0.1.0.zip -O && \
+  unzip bentoclick-skill-0.1.0.zip
 ```
 
 Then ask Claude Code (or any agent attached to the MCP) to build a

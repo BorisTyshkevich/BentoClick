@@ -6,8 +6,8 @@
 #      machine with ClickHouse credentials to bootstrap a fresh
 #      bentoclick install.
 #
-#   2. `bentoclick-dashboard-skill-<version>.zip` — the agent skill
-#      (skills/bentoclick-dashboard/) packaged for upload to a
+#   2. `bentoclick-skill-<version>.zip` — the agent skill
+#      (skills/bentoclick/) packaged for upload to a
 #      claude.ai personal connector or any other host that consumes
 #      a single zip.
 #
@@ -106,12 +106,12 @@ jobs:
         run: |
           v="${{ steps.ver.outputs.version }}"
           mkdir -p dist
-          # Zip with `bentoclick-dashboard/` as the top-level dir so
+          # Zip with `bentoclick/` as the top-level dir so
           # `unzip` produces the directory structure consumers expect.
-          (cd skills && zip -rq "../dist/bentoclick-dashboard-skill-$v.zip" \
-              bentoclick-dashboard/)
-          ls -la "dist/bentoclick-dashboard-skill-$v.zip"
-          echo "path=dist/bentoclick-dashboard-skill-$v.zip" >> "$GITHUB_OUTPUT"
+          (cd skills && zip -rq "../dist/bentoclick-skill-$v.zip" \
+              bentoclick/)
+          ls -la "dist/bentoclick-skill-$v.zip"
+          echo "path=dist/bentoclick-skill-$v.zip" >> "$GITHUB_OUTPUT"
 
       # ---- workflow_dispatch path: just attach artifacts to the run ----
       - name: Upload artifacts to workflow run

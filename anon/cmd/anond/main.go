@@ -81,7 +81,7 @@ func commonFlags(fs *flag.FlagSet) clusterFlags {
 		conn:   fs.String("connection", "", "clickhouse-client connection name (single-cluster sugar)"),
 		source: fs.String("source", "", `source cluster command prefix, e.g. "cl otel"`),
 		dest:   fs.String("dest", "", "dest (sandbox) cluster command prefix (default: same as source)"),
-		metaDB: fs.String("meta-db", "altinity", "metadata database (same name on both clusters)"),
+		metaDB: fs.String("meta-db", "bentoclick", "metadata database (profile_*, generated_objects, manifest)"),
 	}
 }
 
@@ -126,7 +126,8 @@ func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	cf := commonFlags(fs)
 	sourceDB := fs.String("source-db", "", "the single database to mirror (required)")
-	destDB := fs.String("dest-db", "", "sandbox database name on the dest cluster (default: same as --source-db)")
+	destDB := fs.String("dest-db", "", "sandbox database name on the dest cluster (default: <source-db>_anon)")
+	model := fs.String("model", "tokenizing", "anonymization model: tokenizing (token names, masked values) | schema-preserving (real names, masked values)")
 	window := fs.Int("window-days", 7, "query_log mining window")
 	sample := fs.Uint64("sample-rows", 1_000_000, "max sandbox rows per table")
 	serviceUsers := fs.String("service-users", "", "comma-separated service users (demotion rule 2)")
@@ -149,17 +150,18 @@ func cmdRun(args []string) error {
 		return err
 	}
 	cfg := discover.Config{
-		Source:     srcCmd,
-		Dest:       dstCmd,
-		SourceDB:   *sourceDB,
-		DestDB:     *destDB,
-		MetaDB:     *cf.metaDB,
+		Source:            srcCmd,
+		Dest:              dstCmd,
+		SourceDB:          *sourceDB,
+		DestDB:            *destDB,
+		MetaDB:            *cf.metaDB,
 		WindowDays:        *window,
 		SampleRows:        *sample,
 		AttrCardThreshold: *attrCardThreshold,
 		PIIKeyPattern:     *piiKeyPattern,
 		HMACKey:           key,
 		DryRun:            *dryRun,
+		Model:             *model,
 		Log:               logf(time.Now()),
 	}
 	if *serviceUsers != "" {

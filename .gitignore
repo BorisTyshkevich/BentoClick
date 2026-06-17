@@ -43,3 +43,6 @@ build/
 
 # Local scratch
 todo.md
+
+# verification screenshots (not source)
+system-anon/*.png

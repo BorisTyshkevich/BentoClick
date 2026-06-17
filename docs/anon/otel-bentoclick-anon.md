@@ -39,23 +39,23 @@ fail-closed); **bentoclick talks to CH directly** and uses the full default gran
   https://clickhouse/roles`, `role_filter: "^anon_"`, default db
   `claude_otel_anon`, `protocol: http`, and `clickhouse.extra_settings.async_insert:
   "0"` (required for owner-stamping — see below).
-- **MCP tools** (no generic `write_query`): `execute_query` (read), `describe_schema`
-  (view `altinity.schema_guide` — tokenized schema map + class contract),
-  `describe_attributes` (view `altinity.attr_guide` — per Map-key role + usage),
-  `get_dashboards_prefix` (view `bentoclick.dashboards_prefix` — correct
-  `…/b/v/<email>/` share URL), `save_dashboard` (insert → `dashboards_raw`). Tool
-  names match the `bentoclick-dashboard` skill; backing views must be SELECT-able by
-  `anon_*` (granted `dashboards_prefix` to `anon_author_role`; `attr_guide` +
-  `profile_attr_keys` to `anon_mcp_reader`).
+- **MCP tools** (no generic `write_query`, no bulk schema-dump tool): `execute_query`
+  (read), `get_dashboards_prefix` (view `bentoclick.dashboards_prefix` — correct
+  `…/b/<owner>/` share URL), `save_dashboard` (insert → `bentoclick.dashboards_raw`).
+  Schema discovery is done via `execute_query` against the multi-sandbox
+  `bentoclick.schema_guide` / `attr_guide` registries (filter by `anon_database`
+  `[AND table_name]` — the `bentoclick` skill teaches the patterns), not a dedicated
+  tool — a bulk dump overflows the result caps. Backing objects must be SELECT-able by
+  `anon_mcp_reader`.
 - **De-anon read path:** `dashboards_mv` (DEFINER `bentoclick_definer`) wraps panels
   with `detok()` → stored `bentoclick.dashboards` SQL is real-name; the `/b/` SPA
-  queries real `claude_otel`. Needs `GRANT dictGet ON altinity.token_to_real TO
+  queries real `claude_otel`. Needs `GRANT dictGet ON bentosecrets.token_to_real TO
   bentoclick_definer`. **detok rewrites NAMES not VALUES**: GROUP BY any attrmap key
   de-anonymizes for free; only FILTER values must be real in the sandbox.
 - **attrmap per-key roles (auto):** anond classifies each Map key — PII denylist first
   (`organization`, `user.*`, `*.id`, …) → identity (masked); numeric → measure (kept);
   low-card → vocabulary (kept real, filterable); else → sensitive (masked). Emitted to
-  `altinity.profile_attr_keys` → `describe_attributes`. Flags: `--attr-card-threshold`
+  the `bentoclick.attr_guide` registry (queried via `execute_query`). Flags: `--attr-card-threshold`
   (64), `--pii-key-pattern`, `--keep-attr-keys` (manual override). "By user" must GROUP
   BY `user.email` (`user.id` is a source SHA256, not reversible).
 - **CH** token directory `roles_filter

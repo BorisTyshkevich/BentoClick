@@ -61,13 +61,13 @@ func TestNewRunDefaults(t *testing.T) {
 	if r.Cfg.DestDB != "biz" {
 		t.Errorf("DestDB default = %q, want source DB", r.Cfg.DestDB)
 	}
-	if r.Cfg.MetaDB != "altinity" || r.Cfg.WindowDays != 7 || r.Cfg.SampleRows != 1_000_000 {
+	if r.Cfg.MetaDB != "bentoclick" || r.Cfg.WindowDays != 7 || r.Cfg.SampleRows != 1_000_000 {
 		t.Errorf("defaults: %+v", r.Cfg)
 	}
 	if _, err := NewRun(testCfg("", ""), &fakeExec{}, &fakeExec{}); err == nil {
 		t.Error("empty SourceDB must error")
 	}
-	if _, err := NewRun(testCfg("biz", "altinity"), &fakeExec{}, &fakeExec{}); err == nil {
+	if _, err := NewRun(testCfg("biz", "bentoclick"), &fakeExec{}, &fakeExec{}); err == nil {
 		t.Error("DestDB == meta DB must error")
 	}
 }

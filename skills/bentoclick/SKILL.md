@@ -1,18 +1,60 @@
 ---
-name: bentoclick-dashboard
+name: bentoclick
 description: >
-  Build dashboards backed by a ClickHouse cluster and save them so they
-  can be shared by URL. Trigger when the user asks to build, visualize,
-  or save a dashboard / chart / report.
+  Build, save, and share ClickHouse-backed dashboards — including over a
+  tokenized masked sandbox (a <db>_anon database). Trigger when the user asks to
+  build, visualize, or save a dashboard / chart / report. One skill: discover →
+  explore → author → save.
 ---
 
-# bentoclick-dashboard
+# bentoclick
 
 > **Mandatory:** Before writing any panel JSON, read `panels/<type>.md` for
 > every panel type you intend to use. Field names are not guessable from
 > generic chart library conventions — `combo` uses `bars:{key}` + `line:{key}`,
 > not `series:[…]`; `chart` uses `value_key`, not `series`. Reading the wrong
 > field name produces a chart that renders axes and nothing else, with no error.
+
+## Tokenized masked sandboxes (`<db>_anon`)
+
+If your data source is a `*_anon` database it is a **tokenized masked sandbox**:
+you query masked/tokenized data, and the saved dashboard is de-tokenized and the
+sandbox DB rewritten to the real DB at view time, so the **human sees real
+identifiers and data**. You author for the human and never de-anonymize anything.
+
+1. **Discover via the registry** — there is no bulk schema-dump tool. Query
+   `bentoclick.schema_guide` with **`execute_query`**, **always filtered** so you pull only
+   a slice (the whole registry is large — many sandboxes × many columns). Columns:
+   `anon_database, model, naming, table_name, table_role, column_name, type, class, usage`.
+   - list sandboxes: `SELECT DISTINCT anon_database, model, naming FROM bentoclick.schema_guide`
+   - browse a sandbox's tables: `SELECT DISTINCT table_name, table_role FROM
+     bentoclick.schema_guide WHERE anon_database = '<db>'`
+   - describe one table: `SELECT column_name, type, class, usage FROM bentoclick.schema_guide
+     WHERE anon_database = '<db>' AND table_name = '<t>' ORDER BY position`
+   - attrmap keys: same shape against `bentoclick.attr_guide`
+     (`table_name, column_name, attr_key, role, usage`), filtered by `anon_database`/`table_name`.
+
+   Each row's contract:
+   - `naming` — whether table/column **names** are tokens (`tbl_<hex>`) or **real**.
+   - `class` — the per-column rule:
+     - `real` — verbatim value: filter, group, aggregate freely.
+     - `identifier` — a deterministic token: GROUP BY / JOIN / uniq only; the literal
+       is meaningless but it **relabels to the real value** for the human.
+     - `redacted` — masked free text: never filter, group, or show it.
+     - `attrmap` — a `Map`: keys are real, values are per-key roles (see `attr_guide`):
+       vocabulary / measure / identity / sensitive.
+2. **DO** GROUP BY `identifier` columns (they relabel to real), aggregate `real`
+   measures, range on time, and report ratios/shapes — the sandbox is a **sample**
+   (`sandbox_rows` ≪ `total_rows`), so absolute totals aren't the whole truth.
+3. **DON'T** filter a masked literal — `WHERE col = 'x'` matches nothing on an
+   `identifier`/`redacted` column; only filter values whose `class=real`. Don't show
+   a token as a label, and don't try to reverse a token (impossible, unnecessary).
+4. **Redacted columns** show you nothing useful. To surface a real, value-masked
+   rendering for the human, apply a **DB-appropriate query-time transform — your
+   domain skill provides the specifics**. bentoclick stays domain-agnostic.
+5. Keep tokens **out of `title`/`subtitle`** — only `panels` are de-tokenized.
+
+*(Non-sandbox ClickHouse: skip this section and author normally.)*
 
 Dashboards are rows in `bentoclick.dashboards`, served at
 `https://<spa-origin>` behind OAuth. The viewer's
