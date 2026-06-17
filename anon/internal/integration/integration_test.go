@@ -461,9 +461,15 @@ func TestSafetyDecoy(t *testing.T) {
 	defer ex.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", decoy))
 	defer ex.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", metaDB))
 
+	// a real source so the run gets PAST roster and reaches the dest-DB safety
+	// check (the decoy is a foreign object with our dest name → must abort).
+	srcDB := fmt.Sprintf("anontest_decoy_src_%d", os.Getpid())
+	seedSource(t, ex, srcDB)
+	defer ex.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", srcDB))
+
 	cfg := discover.Config{
-		Source: cmd, Dest: cmd, SourceDB: "git", DestDB: decoy,
-		MetaDB: metaDB, WindowDays: 7, SampleRows: 1000,
+		Source: cmd, Dest: cmd, SourceDB: srcDB, DestDB: decoy,
+		MetaDB: metaDB, SecretDB: metaDB, WindowDays: 7, SampleRows: 1000,
 		HMACKey: []byte(testKey), Log: t.Logf,
 	}
 	r, err := discover.NewRun(cfg, ex, ex)
