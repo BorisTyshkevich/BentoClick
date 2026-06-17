@@ -63,16 +63,18 @@ jobs:
     name: go integration (no-leak / trusted-split vs live ClickHouse)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # NON-BLOCKING for now: the suite + harness are ready, but the runner ↔
-    # service-container connectivity to the native port still needs sorting in
-    # this CI environment (the connect smoke-test below dumps diagnostics).
-    # The unit gate in the `test` job is the enforced gate. Flip this to false
-    # (remove continue-on-error) once the smoke-test goes green.
+    # NON-BLOCKING for one more run while the auth fix is verified end to end;
+    # the unit gate in the `test` job is the enforced gate. Flip to blocking
+    # (remove continue-on-error) once this job is green.
     continue-on-error: true
 
     services:
       clickhouse:
         image: clickhouse/clickhouse-server:26.3
+        # 26.3 rejects the passwordless `default` user over the native port;
+        # CLICKHOUSE_PASSWORD sets default's password (default keeps full privs).
+        env:
+          CLICKHOUSE_PASSWORD: clickhouse
         ports:
           - 9000:9000
           - 8123:8123
@@ -101,24 +103,15 @@ jobs:
 
       - name: Smoke-test ClickHouse connectivity
         run: |
-          # Direct --host/--port on IPv4 (the mapped service port isn't on ::1) —
-          # no named-connection config to get wrong. Wait until it answers.
+          # Direct --host/--port on IPv4 with the default user's password.
           for i in $(seq 1 30); do
-            clickhouse-client --host 127.0.0.1 --port 9000 --query "SELECT version()" && break
+            clickhouse-client --host 127.0.0.1 --port 9000 --password clickhouse --query "SELECT version()" && break
             echo "waiting for clickhouse ($i)..."; sleep 2
           done
-          if ! clickhouse-client --host 127.0.0.1 --port 9000 --query "SELECT 'clickhouse reachable'"; then
-            echo "::group::connectivity diagnostics"
-            echo "--- docker ps ---";        docker ps -a || true
-            echo "--- listening sockets ---"; (command -v ss >/dev/null && sudo ss -ltnp) || netstat -ltnp || true
-            echo "--- http ping :8123 ---";   curl -sS -m 5 http://127.0.0.1:8123/ping; echo
-            echo "--- verbose connect :9000 ---"; clickhouse-client --host 127.0.0.1 --port 9000 --query "SELECT 1" 2>&1 | head -40; echo "exit=$?"
-            echo "::endgroup::"
-            exit 1
-          fi
+          clickhouse-client --host 127.0.0.1 --port 9000 --password clickhouse --query "SELECT 'clickhouse reachable'"
 
       - name: Run anond integration suite (single-cluster)
         env:
           # ANON_TEST_CMD bypasses the named-connection config (see integration_test.go)
-          ANON_TEST_CMD: clickhouse-client --host 127.0.0.1 --port 9000
+          ANON_TEST_CMD: clickhouse-client --host 127.0.0.1 --port 9000 --password clickhouse
         run: cd anon && go test ./internal/integration/ -run 'TestPipeline|TestSafetyDecoy' -v
