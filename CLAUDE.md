@@ -47,6 +47,7 @@ executing user-supplied SQL as the viewer's ClickHouse identity.
 | `config/*.json.tmpl` | `envsubst` templates rendered by `install.sh` |
 | `samples/` | Spec JSON installed by `install.sh` as starter dashboards |
 | `skills/bentoclick/` | Generic guide-driven skill: discover → explore → author → save (incl. tokenized masked sandboxes) |
+| `anon/` | Go module (`anond`): the tokenized-masked-sandbox pipeline + the bentoclick integration SQL (`anon/integrations/bentoclick/sql/`). Unit-tested (`make go-test`, 80% floor); live no-leak suite under `internal/integration/` |
 | `tests/schema/` | pytest + clickhouse-connect against CH 26.3 |
 | `tests/runtime/` | vitest + happy-dom unit tests, 90% coverage gate |
 | `tests/e2e/` | Full spec → DOM integration tests |
@@ -55,12 +56,20 @@ executing user-supplied SQL as the viewer's ClickHouse identity.
 ## How to test
 
 ```bash
-make test          # full suite (~2-3 min with warm Docker pull)
+make test          # full suite: go-test + schema (pytest) + runtime (vitest)
+make go-test       # anon/ Go: vet + build + unit tests, GO_COVER_MIN=80% floor
 make test-schema   # pytest only
 make test-runtime  # vitest only
 make coverage      # vitest with HTML report
 make clean         # tear down test container
 ```
+
+`make test` runs `go-test` first (fast, no Docker): the security-critical
+anon/ pipeline (masking, leak guard, de-tok) ships with its unit suite and a
+coverage floor, same gate as the schema/runtime suites. The live no-leak /
+trusted-split / detok-bijection invariants run against a real ClickHouse — in
+CI via the `go-integration` job, locally with
+`ANON_TEST_CONNECTION=<conn> go test ./internal/integration/...` from `anon/`.
 
 Schema tests spin a ClickHouse 26.3 container via
 `tests/docker-compose.test.yml` on ports 18123 (HTTP) and 19000

@@ -1,7 +1,13 @@
-.PHONY: help test test-schema test-runtime coverage clean lint install-deps up down
+.PHONY: help test go-test test-schema test-runtime coverage clean lint install-deps up down
 
 CH_HTTP_PORT ?= 18123
 CH_TCP_PORT  ?= 19000
+
+# Go anonymization pipeline (anon/ module). The de-anon / masking / leak-guard
+# code is security-critical, so its unit suite + a coverage floor gate releases
+# alongside the schema/runtime suites (CLAUDE.md hard rule #1/#2).
+GO_DIR       ?= anon
+GO_COVER_MIN ?= 80
 
 # Prefer the `$(DOCKER_COMPOSE)` v2 plugin if available, else fall back to v1.
 DOCKER_COMPOSE := $(shell $(DOCKER_COMPOSE) version >/dev/null 2>&1 && echo "$(DOCKER_COMPOSE)" || echo "docker-compose")
@@ -10,7 +16,8 @@ PIP            := $(shell command -v pip >/dev/null 2>&1 && echo pip || echo pip
 help:
 	@echo "bentoclick — make targets"
 	@echo ""
-	@echo "  make test          Full suite: schema (pytest) + runtime (vitest)"
+	@echo "  make test          Full suite: go-test + schema (pytest) + runtime (vitest)"
+	@echo "  make go-test       go vet + build + unit tests for anon/ with a $(GO_COVER_MIN)% coverage floor"
 	@echo "  make test-schema   pytest tests/schema/ against CH 26.3 in Docker"
 	@echo "  make test-runtime  vitest run --coverage tests/runtime/"
 	@echo "  make coverage      Same as test-runtime; HTML report at tests/runtime/coverage/"
@@ -53,7 +60,15 @@ test-runtime:
 coverage: test-runtime
 	@echo "Coverage report at tests/runtime/coverage/index.html"
 
-test:
+go-test:
+	cd $(GO_DIR) && go vet ./...
+	cd $(GO_DIR) && go build ./...
+	cd $(GO_DIR) && go test ./internal/... -coverprofile=coverage.out -covermode=atomic
+	@cd $(GO_DIR) && total=$$(go tool cover -func=coverage.out | awk '/^total:/{print $$3+0}'); \
+	  echo "==> Go internal/ coverage: $$total% (floor $(GO_COVER_MIN)%)"; \
+	  awk "BEGIN{exit ($$total < $(GO_COVER_MIN))}" || { echo "ERROR: Go coverage $$total% is below the $(GO_COVER_MIN)% floor" >&2; exit 1; }
+
+test: go-test
 	@./tests/run.sh
 
 clean: down

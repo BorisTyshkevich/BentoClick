@@ -8,12 +8,20 @@ on:
 
 jobs:
   test:
-    name: schema (pytest) + runtime (vitest) + coverage
+    name: go (vet+unit+coverage) + schema (pytest) + runtime (vitest)
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
+
+      # `make test` now runs `go-test` first (anon/ vet + build + unit suite
+      # with the GO_COVER_MIN floor) before the schema/runtime suites.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: anon/go.mod
+          cache: false   # anon/ is stdlib-only (no go.sum)
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -45,3 +53,65 @@ jobs:
           path: tests/runtime/coverage/
           if-no-files-found: ignore
           retention-days: 14
+
+  # The anond integration suite asserts the end-to-end no-leak / trusted-split /
+  # detok-bijection invariants — the security guarantees that previously ran
+  # ONLY in t.Skip()'d tests (H5). They need a live ClickHouse; this job stands
+  # one up and runs the single-cluster subset (the cross-cluster cases need the
+  # `cl otel` wrapper and stay local-only).
+  go-integration:
+    name: go integration (no-leak / trusted-split vs live ClickHouse)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:26.3
+        ports:
+          - 9000:9000
+          - 8123:8123
+        options: >-
+          --health-cmd "wget -q -O - http://localhost:8123/ping || exit 1"
+          --health-interval 5s --health-timeout 3s --health-retries 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: anon/go.mod
+          cache: false
+
+      - name: Install clickhouse-client
+        run: |
+          curl -fsSL https://clickhouse.com/ -o /tmp/ch-install.sh
+          sh /tmp/ch-install.sh        # downloads the single ./clickhouse binary
+          sudo install -m 0755 ./clickhouse /usr/local/bin/clickhouse
+          # the multicall binary dispatches on argv[0]; alias the client name the
+          # integration harness invokes (`clickhouse-client --connection ...`).
+          sudo ln -sf /usr/local/bin/clickhouse /usr/local/bin/clickhouse-client
+          clickhouse-client --version
+
+      - name: Configure the 'demo' named connection
+        run: |
+          mkdir -p ~/.clickhouse-client
+          cat > ~/.clickhouse-client/config.xml <<'XML'
+          <config>
+            <connections_credentials>
+              <connection>
+                <name>demo</name>
+                <hostname>localhost</hostname>
+                <port>9000</port>
+                <user>default</user>
+                <password></password>
+              </connection>
+            </connections_credentials>
+          </config>
+          XML
+          clickhouse-client --connection demo --query "SELECT version()"
+
+      - name: Run anond integration suite (single-cluster)
+        env:
+          ANON_TEST_CONNECTION: demo
+        run: cd anon && go test ./internal/integration/ -run 'TestPipeline|TestSafetyDecoy' -v

@@ -50,8 +50,15 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "==> version=$v"
 
-      # ---- Gate: same test suite as tests.yml. Tag pushes shouldn't
-      # produce releases for red commits. ----
+      # ---- Gate: same test suite as tests.yml (make test now includes the
+      # anon/ go-test floor). Tag pushes shouldn't produce releases for red
+      # commits. ----
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: anon/go.mod
+          cache: false
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
