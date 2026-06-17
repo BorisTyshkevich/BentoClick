@@ -121,6 +121,38 @@ func seedSource(t *testing.T, ex chclient.Executor, db string) {
 	}
 }
 
+// seedRegistry pre-creates the LLM-facing registry *_data tables (normally
+// provisioned by anon/integrations/bentoclick/sql/08-schema-guide-registry.sql)
+// in the per-test registry DB, so the pipeline's registry write lands like a
+// real deploy. DDL mirrors 08-…sql (minus the views/comments/grants).
+func seedRegistry(t *testing.T, ex chclient.Executor, db string) {
+	t.Helper()
+	ctx := context.Background()
+	stmts := []string{
+		fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", db),
+		fmt.Sprintf("CREATE TABLE IF NOT EXISTS `%s`.schema_guide_data ("+
+			"run_id String, anon_database String, "+
+			"model Enum8('tokenizing'=1,'schema-preserving'=2), "+
+			"naming Enum8('tokens'=1,'real'=2), "+
+			"table_name String, table_role String DEFAULT '', "+
+			"total_rows UInt64 DEFAULT 0, sandbox_rows UInt64 DEFAULT 0, position UInt32 DEFAULT 0, "+
+			"column_name String, type String DEFAULT '', "+
+			"class Enum8('real'=1,'identifier'=2,'redacted'=3,'attrmap'=4), "+
+			"usage String DEFAULT '', updated_at DateTime DEFAULT now()) "+
+			"ENGINE = ReplacingMergeTree(updated_at) ORDER BY (anon_database, table_name, column_name)", db),
+		fmt.Sprintf("CREATE TABLE IF NOT EXISTS `%s`.attr_guide_data ("+
+			"run_id String, anon_database String, table_name String, column_name String, attr_key String, "+
+			"role Enum8('vocabulary'=1,'measure'=2,'identity'=3,'sensitive'=4), "+
+			"usage String DEFAULT '', updated_at DateTime DEFAULT now()) "+
+			"ENGINE = ReplacingMergeTree(updated_at) ORDER BY (anon_database, table_name, column_name, attr_key)", db),
+	}
+	for _, s := range stmts {
+		if err := ex.Exec(ctx, s); err != nil {
+			t.Fatalf("seed registry DB %q: %v\n  stmt: %s", db, err, s)
+		}
+	}
+}
+
 // setupCross: source = ANON_TEST_SOURCE_CMD (db ANON_TEST_SOURCE_DB, default
 // claude_otel), dest = ANON_TEST_DEST_CONNECTION.
 func setupCross(t *testing.T) *fixture {
@@ -146,6 +178,7 @@ func setup(t *testing.T, srcCmd, dstCmd, srcDB, destDB string, cross bool) *fixt
 		DestDB:     destDB, // differs from srcDB -> DB name stays tokenized
 		MetaDB:     metaDB,
 		SecretDB:   metaDB, // co-locate the secret in the per-test meta DB (dropped on cleanup)
+		RegistryDB: metaDB, // ditto for the LLM-facing registry (normally bentoclick)
 		WindowDays: 7,
 		SampleRows: 10_000,
 		HMACKey:    []byte(testKey),
@@ -163,6 +196,9 @@ func setup(t *testing.T, srcCmd, dstCmd, srcDB, destDB string, cross bool) *fixt
 		metaDB: metaDB, cfg: cfg, run: r, ctx: context.Background(), crossCluster: cross,
 	}
 	t.Cleanup(func() { f.cleanup(t) })
+	// the registry *_data tables are deploy-provisioned (08-…sql); create them
+	// in the per-test registry DB (dest cluster) so the pipeline's write lands.
+	seedRegistry(t, dstEx, cfg.RegistryDB)
 	return f
 }
 

@@ -56,31 +56,14 @@ jobs:
 
   # The anond integration suite asserts the end-to-end no-leak / trusted-split /
   # detok-bijection invariants — the security guarantees that previously ran
-  # ONLY in t.Skip()'d tests (H5). They need a live ClickHouse; this job stands
-  # one up and runs the single-cluster subset (the cross-cluster cases need the
-  # `cl otel` wrapper and stay local-only).
+  # ONLY in t.Skip()'d tests (H5). No Docker: franchb/embedded-clickhouse runs
+  # ClickHouse as a host subprocess (TestMain), using the clickhouse binary
+  # installed below. The cross-cluster cases need the `cl otel` wrapper and stay
+  # local-only.
   go-integration:
-    name: go integration (no-leak / trusted-split vs live ClickHouse)
+    name: go integration (no-leak / trusted-split, embedded ClickHouse)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # NON-BLOCKING for one more run while the auth fix is verified end to end;
-    # the unit gate in the `test` job is the enforced gate. Flip to blocking
-    # (remove continue-on-error) once this job is green.
-    continue-on-error: true
-
-    services:
-      clickhouse:
-        image: clickhouse/clickhouse-server:26.3
-        # 26.3 rejects the passwordless `default` user over the native port;
-        # CLICKHOUSE_PASSWORD sets default's password (default keeps full privs).
-        env:
-          CLICKHOUSE_PASSWORD: clickhouse
-        ports:
-          - 9000:9000
-          - 8123:8123
-        options: >-
-          --health-cmd "wget -q -O - http://localhost:8123/ping || exit 1"
-          --health-interval 5s --health-timeout 3s --health-retries 30
 
     steps:
       - uses: actions/checkout@v4
@@ -91,27 +74,13 @@ jobs:
           go-version-file: anon/go.mod
           cache: false
 
-      - name: Install clickhouse-client
+      - name: Install clickhouse binary
         run: |
           curl -fsSL https://clickhouse.com/ -o /tmp/ch-install.sh
           sh /tmp/ch-install.sh        # downloads the single ./clickhouse binary
           sudo install -m 0755 ./clickhouse /usr/local/bin/clickhouse
-          # the multicall binary dispatches on argv[0]; alias the client name the
-          # integration harness invokes.
-          sudo ln -sf /usr/local/bin/clickhouse /usr/local/bin/clickhouse-client
-          clickhouse-client --version
+          clickhouse --version
 
-      - name: Smoke-test ClickHouse connectivity
-        run: |
-          # Direct --host/--port on IPv4 with the default user's password.
-          for i in $(seq 1 30); do
-            clickhouse-client --host 127.0.0.1 --port 9000 --password clickhouse --query "SELECT version()" && break
-            echo "waiting for clickhouse ($i)..."; sleep 2
-          done
-          clickhouse-client --host 127.0.0.1 --port 9000 --password clickhouse --query "SELECT 'clickhouse reachable'"
-
-      - name: Run anond integration suite (single-cluster)
-        env:
-          # ANON_TEST_CMD bypasses the named-connection config (see integration_test.go)
-          ANON_TEST_CMD: clickhouse-client --host 127.0.0.1 --port 9000 --password clickhouse
+      - name: Run anond integration suite (embedded ClickHouse)
+        # TestMain finds `clickhouse` on PATH and boots an embedded server.
         run: cd anon && go test ./internal/integration/ -run 'TestPipeline|TestSafetyDecoy' -v

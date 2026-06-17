@@ -67,9 +67,12 @@ make clean         # tear down test container
 `make test` runs `go-test` first (fast, no Docker): the security-critical
 anon/ pipeline (masking, leak guard, de-tok) ships with its unit suite and a
 coverage floor, same gate as the schema/runtime suites. The live no-leak /
-trusted-split / detok-bijection invariants run against a real ClickHouse — in
-CI via the `go-integration` job, locally with
-`ANON_TEST_CONNECTION=<conn> go test ./internal/integration/...` from `anon/`.
+trusted-split / detok-bijection invariants run against a real ClickHouse with
+NO Docker — `anon/internal/integration` boots ClickHouse as a host subprocess
+via `franchb/embedded-clickhouse` (TestMain), reusing a `clickhouse` binary on
+PATH. Locally: `go test ./internal/integration/...` from `anon/` (needs
+`clickhouse` installed); in CI via the `go-integration` job. The cross-cluster
+cases still take `ANON_TEST_SOURCE_CMD`/`ANON_TEST_DEST_CONNECTION`.
 
 Schema tests spin a ClickHouse 26.3 container via
 `tests/docker-compose.test.yml` on ports 18123 (HTTP) and 19000
