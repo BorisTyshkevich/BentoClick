@@ -95,21 +95,29 @@ jobs:
 
       - name: Configure the 'demo' named connection
         run: |
-          mkdir -p ~/.clickhouse-client
-          cat > ~/.clickhouse-client/config.xml <<'XML'
-          <config>
+          # 127.0.0.1 (not localhost) so the client uses IPv4 — the mapped
+          # service port isn't on ::1. Written to both auto-loaded config paths.
+          conf='<config>
             <connections_credentials>
               <connection>
                 <name>demo</name>
-                <hostname>localhost</hostname>
+                <hostname>127.0.0.1</hostname>
                 <port>9000</port>
                 <user>default</user>
                 <password></password>
               </connection>
             </connections_credentials>
-          </config>
-          XML
-          clickhouse-client --connection demo --query "SELECT version()"
+          </config>'
+          mkdir -p ~/.clickhouse-client
+          printf '%s\n' "$conf" > ~/.clickhouse-client/config.xml
+          sudo mkdir -p /etc/clickhouse-client
+          printf '%s\n' "$conf" | sudo tee /etc/clickhouse-client/config.xml >/dev/null
+          # wait for the service to accept queries, then smoke-test the connection
+          for i in $(seq 1 30); do
+            clickhouse-client --connection demo --query "SELECT version()" && break
+            echo "waiting for clickhouse ($i)..."; sleep 2
+          done
+          clickhouse-client --connection demo --query "SELECT 'demo connection OK'"
 
       - name: Run anond integration suite (single-cluster)
         env:
