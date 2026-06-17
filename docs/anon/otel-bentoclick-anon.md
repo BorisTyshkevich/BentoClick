@@ -44,7 +44,7 @@ fail-closed); **bentoclick talks to CH directly** and uses the full default gran
   `describe_attributes` (view `altinity.attr_guide` — per Map-key role + usage),
   `get_dashboards_prefix` (view `bentoclick.dashboards_prefix` — correct
   `…/b/v/<email>/` share URL), `save_dashboard` (insert → `dashboards_raw`). Tool
-  names match the `bentoclick-dashboard` skill; backing views must be SELECT-able by
+  names match the `bentoclick` skill; backing views must be SELECT-able by
   `anon_*` (granted `dashboards_prefix` to `anon_author_role`; `attr_guide` +
   `profile_attr_keys` to `anon_mcp_reader`).
 - **De-anon read path:** `dashboards_mv` (DEFINER `bentoclick_definer`) wraps panels

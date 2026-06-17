@@ -46,7 +46,7 @@ executing user-supplied SQL as the viewer's ClickHouse identity.
 | `runtime/v1/` | SPA shell + `dash.js` for `spec_version = 1` |
 | `config/*.json.tmpl` | `envsubst` templates rendered by `install.sh` |
 | `samples/` | Spec JSON installed by `install.sh` as starter dashboards |
-| `skills/bentoclick-dashboard/` | Authoring skill for Claude Code |
+| `skills/bentoclick/` | Generic guide-driven skill: discover → explore → author → save (incl. tokenized masked sandboxes) |
 | `tests/schema/` | pytest + clickhouse-connect against CH 26.3 |
 | `tests/runtime/` | vitest + happy-dom unit tests, 90% coverage gate |
 | `tests/e2e/` | Full spec → DOM integration tests |
@@ -80,7 +80,7 @@ isolation. The fetch path is mocked via the `DASH.fetch` seam.
 3. If the panel introduces a new column behavior (e.g. accepts HTML),
    extend `sanitize_panel` in `schema/01-database.sql` *and* add a
    case to `tests/schema/test_sanitize_panel.py`.
-4. Document it in `skills/bentoclick-dashboard/references/spec-mode.md`.
+4. Document it in `skills/bentoclick/panels/<name>.md`.
 5. Add a fixture and assertion to `tests/e2e/spec-render.test.js`.
 
 ## What stays out
