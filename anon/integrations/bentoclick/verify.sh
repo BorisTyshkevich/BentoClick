@@ -5,7 +5,7 @@
 # must return 0; the script exits non-zero if any fails. Run after a sandbox build
 # / RBAC change. Read-only.
 #
-#   CL="cl otel" ANON_ROLE=anon_mcp_reader VIEWER_ROLE=bentoclick_viewer_role \
+#   CL="cl otel" ANON_ROLE=anon_mcp_reader VIEWER_ROLE=bentoclick_anon_viewer_role \
 #   SECRET_DB=bentosecrets ./verify.sh [anon_database ...]
 #
 # Layer note: these probe DEPLOYMENT objects/roles (bentoclick.*, bentosecrets.*,
@@ -14,7 +14,7 @@
 set -uo pipefail
 CL="${CL:-cl otel}"
 ANON_ROLE="${ANON_ROLE:-anon_mcp_reader}"
-VIEWER_ROLE="${VIEWER_ROLE:-bentoclick_viewer_role}"
+VIEWER_ROLE="${VIEWER_ROLE:-bentoclick_anon_viewer_role}"   # created by 00-anon-rbac.sql as ${DB}_anon_viewer_role
 SECRET_DB="${SECRET_DB:-bentosecrets}"
 REG_DB="${REG_DB:-bentoclick}"
 DATA_DBS="${DATA_DBS:-claude_otel}"   # real (non-anon) data DBs the anon role must not reach

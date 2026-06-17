@@ -1,5 +1,9 @@
--- detok(s) — expand every anond token in a text blob to its real
--- identifier, via the token_to_real dictionary.
+-- detok(s) — translate an LLM-authored (sandbox) text blob into one that runs
+-- against real data: (1) expand every anond token to its real identifier via
+-- the token_to_real dictionary, then (2) map the sandbox database qualifier
+-- `<real>_anon.` back to `<real>.`. Tables/columns are tokens (step 1), but the
+-- sandbox DB name is disclosed verbatim (`claude_otel_anon`, not a token), so
+-- the LLM authors `FROM claude_otel_anon.<tbl_token>` and step 2 resolves the DB.
 --
 -- This is word-substitution, not SQL parsing: anond tokens occupy a
 -- reserved lexical namespace (`<kind>_<hex>`), and a run aborts if any real
@@ -36,13 +40,21 @@
 -- sanitize_json_text).
 
 CREATE FUNCTION detok AS (s) ->
-  arrayFold(
-    (acc, tok) -> replaceRegexpAll(
-                    acc,
-                    concat('\\b', tok, '\\b'),
-                    dictGetOrDefault('${META_DB}.token_to_real', 'original', tuple(tok), tok)),
-    arrayDistinct(extractAll(
-      s,
-      '(?:db|tbl|col|user|role|dict|cluster|disk|host|sql|field|enum)_[0-9a-f]{8,16}')),
-    s
+  -- Step 2: map the sandbox DB qualifier `<real>_anon.` back to `<real>.`.
+  -- Scoped to a database qualifier — the `_anon` suffix must sit immediately
+  -- before `.` or `` `. `` — so a real value that merely ends in `_anon` is
+  -- never rewritten. (`\b...\b` token expansion has already fixed the table.)
+  replaceRegexpAll(
+    -- Step 1: expand every anond token to its real identifier (see header).
+    arrayFold(
+      (acc, tok) -> replaceRegexpAll(
+                      acc,
+                      concat('\\b', tok, '\\b'),
+                      dictGetOrDefault('${META_DB}.token_to_real', 'original', tuple(tok), tok)),
+      arrayDistinct(extractAll(
+        s,
+        '(?:db|tbl|col|user|role|dict|cluster|disk|host|sql|field|enum)_[0-9a-f]{8,16}')),
+      s),
+    '([A-Za-z0-9_]+)_anon(`?\\.)',
+    '\\1\\2'
   );

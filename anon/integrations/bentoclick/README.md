@@ -75,7 +75,7 @@ Apply on otel, in order, on top of a stock bentoclick install:
 | File | Object | Purpose |
 |---|---|---|
 | `sql/01-token-dict.sql` | `${META_DB}.token_to_real` dictionary | reverse map `token → original`, sourced from anond's `${META_DB}.identifier_map`; `COMPLEX_KEY_HASHED`, monotonic `LIFETIME` reload |
-| `sql/02-detok-udf.sql` | `detok(s)` UDF | word-substitution expand of every token in a text blob via the dictionary |
+| `sql/02-detok-udf.sql` | `detok(s)` UDF | word-substitution expand of every token in a text blob via the dictionary, then remap the sandbox DB qualifier `<real>_anon.` → `<real>.` |
 | `sql/03-dashboards-anon.sql` | `dashboards_tok` table, re-pointed `dashboards_mv`, `dashboards` de-tok view, grants | the storage-split rewiring |
 
 `${DB}` = dashboard database (e.g. `bentoclick`), `${META_DB}` = anond meta
