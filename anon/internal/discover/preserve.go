@@ -189,7 +189,7 @@ func (r *Run) executePreserve(ctx context.Context) error {
 		}
 	}
 	if len(allReg) > 0 {
-		if err := reg.Insert(ctx, "schema_guide", registrySchemaCols, allReg); err != nil {
+		if err := reg.Insert(ctx, "schema_guide_data", registrySchemaCols, allReg); err != nil {
 			return err
 		}
 	}
@@ -255,8 +255,9 @@ func (r *Run) materializePreserve(ctx context.Context, sbDB string, t *Table, p 
 var registryAttrCols = []string{"run_id", "anon_database", "table_name", "column_name", "attr_key", "role", "usage"}
 
 // writeSchemaGuideTokenizing writes registry rows for the tokenizing model
-// (token table/column names, naming='tokens') into RegistryDB.schema_guide and
-// the attrmap key roles into RegistryDB.attr_guide.
+// (token table/column names, naming='tokens') into the RegistryDB.schema_guide_data
+// backing table and the attrmap key roles into RegistryDB.attr_guide_data (the
+// schema_guide/attr_guide views read these *_data tables FINAL).
 func (r *Run) writeSchemaGuideTokenizing(ctx context.Context) error {
 	reg := store.New(r.DstEx, r.Cfg.RegistryDB)
 	anonDB := r.Cfg.DestDB
@@ -289,7 +290,7 @@ func (r *Run) writeSchemaGuideTokenizing(ctx context.Context) error {
 		}
 	}
 	if len(rows) > 0 {
-		if err := reg.Insert(ctx, "schema_guide", registrySchemaCols, rows); err != nil {
+		if err := reg.Insert(ctx, "schema_guide_data", registrySchemaCols, rows); err != nil {
 			return err
 		}
 	}
@@ -310,7 +311,7 @@ func (r *Run) writeSchemaGuideTokenizing(ctx context.Context) error {
 		})
 	}
 	if len(aRows) > 0 {
-		return reg.Insert(ctx, "attr_guide", registryAttrCols, aRows)
+		return reg.Insert(ctx, "attr_guide_data", registryAttrCols, aRows)
 	}
 	return nil
 }
