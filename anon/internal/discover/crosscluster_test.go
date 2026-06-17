@@ -53,6 +53,39 @@ func testCfg(srcDB, dstDB string) Config {
 	}
 }
 
+// TestObserveTokenizesCustomAttrKeys guards the observe->build->tok pipeline for
+// custom attrmap keys (P3): a non-semconv key must be Observe("field")'d BEFORE
+// Build so writeMaskingPlan can mint its field_<hex> token afterwards. Regression
+// for the bug where the "field" kind was never observed, so a real tokenizing run
+// failed at masking-plan time with "unobserved field identifier".
+func TestObserveTokenizesCustomAttrKeys(t *testing.T) {
+	src := &fakeExec{rows: map[string]*chclient.Rows{
+		// attrKeyRoles scan: one custom (non-semconv) key + one semconv key.
+		"uniqExact(v) AS card": {Data: [][]*string{
+			{s("my.custom_key"), s("100"), s("0")}, // custom -> field_ token
+			{s("http.method"), s("4"), s("0")},     // semconv -> kept real, no field token
+		}},
+	}}
+	r, err := NewRun(testCfg("biz", "biz_anon"), src, &fakeExec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Tables = []*Table{{Database: "biz", Name: "events",
+		Columns: []classify.Column{{Name: "attrs", Type: "Map(String, String)"}}}}
+	if err := r.observe(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.IdMap.Build(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.tok("field", "my.custom_key"); err != nil {
+		t.Fatalf("custom attr key not observed for field tokenization: %v", err)
+	}
+	if _, err := r.tok("field", "http.method"); err == nil {
+		t.Error("semconv key should NOT be observed as a field token (kept real)")
+	}
+}
+
 func TestNewRunDefaults(t *testing.T) {
 	r, err := NewRun(testCfg("biz", ""), &fakeExec{}, &fakeExec{})
 	if err != nil {

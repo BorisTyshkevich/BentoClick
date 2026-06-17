@@ -17,7 +17,6 @@ package discover
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/Altinity/anon-discovery/internal/classify"
@@ -55,18 +54,6 @@ func sandboxEligible(t *Table) bool {
 // it (REAL names — trusted side), and returns the plans for materialization.
 func (r *Run) writeMaskingPlan(ctx context.Context) ([]*tablePlan, error) {
 	seed := r.Minter.ValueSeed()
-	threshold := r.Cfg.AttrCardThreshold
-	if threshold == 0 {
-		threshold = 64
-	}
-	pat := classify.DefaultPIIKeyPattern
-	if r.Cfg.PIIKeyPattern != "" {
-		pat = "(" + pat + ")|(" + r.Cfg.PIIKeyPattern + ")"
-	}
-	denyRe, derr := regexp.Compile(pat)
-	if derr != nil {
-		return nil, fmt.Errorf("compile PII key pattern: %w", derr)
-	}
 	var plans []*tablePlan
 	var rows [][]*string
 	for _, t := range r.Tables {
@@ -91,7 +78,7 @@ func (r *Run) writeMaskingPlan(ctx context.Context) ([]*tablePlan, error) {
 			var spec *classify.AttrMaskSpec
 			if class == classify.ClassAttrMap {
 				ms := classify.AttrMaskSpec{}
-				infos, qerr := r.attrKeyRoles(ctx, t.Database, t.Name, c.Name, threshold, denyRe)
+				infos, qerr := r.attrRolesFor(ctx, t.Database, t.Name, c.Name)
 				if qerr != nil {
 					r.Notes = append(r.Notes, fmt.Sprintf("attr-key roles failed for %s.%s.%s: %s (masking all non-override values)", t.Database, t.Name, c.Name, firstLine(qerr.Error())))
 				} else {

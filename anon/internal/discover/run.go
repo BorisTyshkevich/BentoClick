@@ -112,6 +112,11 @@ type Run struct {
 	// writeMaskingPlan, emitted to profile_attr_keys in writeProfile).
 	AttrKeyRoles []AttrKeyInfo
 
+	// attrCache memoizes attrKeyRoles per "db\ttable\tcol" so observe() (which
+	// must register custom field_ key tokens BEFORE Build) and writeMaskingPlan
+	// (which mints them AFTER Build) see the exact same key set — one scan, no race.
+	attrCache map[string][]AttrKeyInfo
+
 	started time.Time
 }
 
@@ -133,6 +138,43 @@ func (a AttrKeyInfo) outKey() string {
 		return a.KeyOut
 	}
 	return a.Key
+}
+
+// attrParams returns the attr-key classification threshold + compiled PII deny
+// regexp (operator pattern OR-ed onto the default), shared by observe + masking.
+func (r *Run) attrParams() (uint64, *regexp.Regexp, error) {
+	threshold := r.Cfg.AttrCardThreshold
+	if threshold == 0 {
+		threshold = 64
+	}
+	pat := classify.DefaultPIIKeyPattern
+	if r.Cfg.PIIKeyPattern != "" {
+		pat = "(" + pat + ")|(" + r.Cfg.PIIKeyPattern + ")"
+	}
+	re, err := regexp.Compile(pat)
+	return threshold, re, err
+}
+
+// attrRolesFor returns the (memoized) per-key roles for one attrmap column, so
+// the observe wave and the masking plan agree on exactly which custom keys exist.
+func (r *Run) attrRolesFor(ctx context.Context, db, table, col string) ([]AttrKeyInfo, error) {
+	if r.attrCache == nil {
+		r.attrCache = map[string][]AttrKeyInfo{}
+	}
+	k := db + "\t" + table + "\t" + col
+	if v, ok := r.attrCache[k]; ok {
+		return v, nil
+	}
+	threshold, denyRe, err := r.attrParams()
+	if err != nil {
+		return nil, err
+	}
+	infos, err := r.attrKeyRoles(ctx, db, table, col, threshold, denyRe)
+	if err != nil {
+		return nil, err
+	}
+	r.attrCache[k] = infos
+	return infos, nil
 }
 
 // attrKeyRoles scans one attrmap column's keys on the SOURCE and classifies each
@@ -354,6 +396,22 @@ func (r *Run) observe(ctx context.Context) error {
 		im.Observe("tbl", t.Name)
 		for _, c := range t.Columns {
 			im.Observe("col", c.Name)
+			// Custom (non-semconv) attrmap KEY names are tokenized to field_<hex>
+			// (P3). They must be observed HERE, before Build — writeMaskingPlan
+			// mints them post-Build and the IdMap is fail-closed. The scan is
+			// cached so the masking plan sees the identical key set.
+			if classify.Classify(c) == classify.ClassAttrMap {
+				infos, err := r.attrRolesFor(ctx, t.Database, t.Name, c.Name)
+				if err != nil {
+					r.Notes = append(r.Notes, fmt.Sprintf("attr-key scan failed for %s.%s.%s: %s", t.Database, t.Name, c.Name, firstLine(err.Error())))
+					continue
+				}
+				for _, info := range infos {
+					if !classify.IsSemconvKey(info.Key) {
+						im.Observe("field", info.Key)
+					}
+				}
+			}
 		}
 	}
 	for _, rel := range r.Relations {
