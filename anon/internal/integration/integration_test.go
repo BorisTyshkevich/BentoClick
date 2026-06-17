@@ -4,6 +4,11 @@
 //
 //	ANON_TEST_CONNECTION=demo go test ./internal/integration/...
 //
+// or pass the full client command directly (CI uses this — no named-connection
+// config needed):
+//
+//	ANON_TEST_CMD="clickhouse-client --host 127.0.0.1 --port 9000" go test ./internal/integration/...
+//
 // Cross-cluster suite (source via a wrapper command, dest via a connection):
 //
 //	ANON_TEST_SOURCE_CMD="cl otel" ANON_TEST_SOURCE_DB=claude_otel \
@@ -52,13 +57,25 @@ type fixture struct {
 	crossCluster bool
 }
 
-// setupSingle: source = dest = ANON_TEST_CONNECTION, source DB "git".
-func setupSingle(t *testing.T) *fixture {
-	c := os.Getenv("ANON_TEST_CONNECTION")
-	if c == "" {
-		t.Skip("ANON_TEST_CONNECTION not set; skipping integration tests")
+// singleClientCmd resolves the clickhouse-client command for the single-cluster
+// suite. ANON_TEST_CMD wins (a full client command, e.g.
+// "clickhouse-client --host 127.0.0.1 --port 9000") — it sidesteps the
+// named-connection config, which is what CI uses. Otherwise ANON_TEST_CONNECTION
+// builds "clickhouse-client --connection <name>". Skips if neither is set.
+func singleClientCmd(t *testing.T) string {
+	if cmd := os.Getenv("ANON_TEST_CMD"); cmd != "" {
+		return cmd
 	}
-	cmd := "clickhouse-client --connection " + c
+	if c := os.Getenv("ANON_TEST_CONNECTION"); c != "" {
+		return "clickhouse-client --connection " + c
+	}
+	t.Skip("ANON_TEST_CMD / ANON_TEST_CONNECTION not set; skipping integration tests")
+	return ""
+}
+
+// setupSingle: source = dest = the single-cluster client, source DB "git".
+func setupSingle(t *testing.T) *fixture {
+	cmd := singleClientCmd(t)
 	return setup(t, cmd, cmd, "git", fmt.Sprintf("anontest_sb_%d", os.Getpid()), false)
 }
 
@@ -384,11 +401,7 @@ func (f *fixture) assertAttrMap(t *testing.T) {
 // E: a decoy database named like our dest DB but NOT registered must abort
 // the run and must never be dropped.
 func TestSafetyDecoy(t *testing.T) {
-	c := os.Getenv("ANON_TEST_CONNECTION")
-	if c == "" {
-		t.Skip("ANON_TEST_CONNECTION not set; skipping integration tests")
-	}
-	cmd := "clickhouse-client --connection " + c
+	cmd := singleClientCmd(t)
 	ex := chclient.NewFromString(cmd)
 	ctx := context.Background()
 	metaDB := fmt.Sprintf("altinity_anontest_decoy_%d", os.Getpid())

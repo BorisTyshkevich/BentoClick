@@ -89,37 +89,22 @@ jobs:
           sh /tmp/ch-install.sh        # downloads the single ./clickhouse binary
           sudo install -m 0755 ./clickhouse /usr/local/bin/clickhouse
           # the multicall binary dispatches on argv[0]; alias the client name the
-          # integration harness invokes (`clickhouse-client --connection ...`).
+          # integration harness invokes.
           sudo ln -sf /usr/local/bin/clickhouse /usr/local/bin/clickhouse-client
           clickhouse-client --version
 
-      - name: Configure the 'demo' named connection
+      - name: Smoke-test ClickHouse connectivity
         run: |
-          # 127.0.0.1 (not localhost) so the client uses IPv4 — the mapped
-          # service port isn't on ::1. Written to both auto-loaded config paths.
-          conf='<config>
-            <connections_credentials>
-              <connection>
-                <name>demo</name>
-                <hostname>127.0.0.1</hostname>
-                <port>9000</port>
-                <user>default</user>
-                <password></password>
-              </connection>
-            </connections_credentials>
-          </config>'
-          mkdir -p ~/.clickhouse-client
-          printf '%s\n' "$conf" > ~/.clickhouse-client/config.xml
-          sudo mkdir -p /etc/clickhouse-client
-          printf '%s\n' "$conf" | sudo tee /etc/clickhouse-client/config.xml >/dev/null
-          # wait for the service to accept queries, then smoke-test the connection
+          # Direct --host/--port on IPv4 (the mapped service port isn't on ::1) —
+          # no named-connection config to get wrong. Wait until it answers.
           for i in $(seq 1 30); do
-            clickhouse-client --connection demo --query "SELECT version()" && break
+            clickhouse-client --host 127.0.0.1 --port 9000 --query "SELECT version()" && break
             echo "waiting for clickhouse ($i)..."; sleep 2
           done
-          clickhouse-client --connection demo --query "SELECT 'demo connection OK'"
+          clickhouse-client --host 127.0.0.1 --port 9000 --query "SELECT 'clickhouse reachable'"
 
       - name: Run anond integration suite (single-cluster)
         env:
-          ANON_TEST_CONNECTION: demo
+          # ANON_TEST_CMD bypasses the named-connection config (see integration_test.go)
+          ANON_TEST_CMD: clickhouse-client --host 127.0.0.1 --port 9000
         run: cd anon && go test ./internal/integration/ -run 'TestPipeline|TestSafetyDecoy' -v
