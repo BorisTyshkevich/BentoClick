@@ -52,7 +52,11 @@ export function renderCombo(panel, state, ctx) {
     // axis labels render around 10–12px when the SVG scales to full
     // panel width via `width:100%`.
     const root = svgRoot({ width: 880, height: 300, padding: { top: 10, right: 56, bottom: 28, left: 52 } });
-    const xScale = bandScale(xs, [0, root.iw], 0.15);
+    // paddingInner 0.4 → bars are 60% of the band (40% gap), matching the
+    // approved design's comboChart (`bw = (iw/n) * 0.6`). A smaller pad
+    // here reads as too-wide, near-touching bars on dense (e.g. hourly)
+    // series; the bandwidth is still capped at 32px below for sparse ones.
+    const xScale = bandScale(xs, [0, root.iw], 0.4);
 
     const barVals = rows.map((r) => Number(r[barsCfg.key]) || 0);
     const lineVals = rows.map((r) => Number(r[lineCfg.key]) || 0);
