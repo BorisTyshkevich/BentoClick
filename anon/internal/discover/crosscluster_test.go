@@ -53,7 +53,7 @@ var testKey = []byte("0123456789abcdef0123456789abcdef")
 
 func testCfg(srcDB, dstDB string) Config {
 	return Config{
-		Source: "cl otel", Dest: "clickhouse-client --connection demo",
+		Source: "cl mycluster", Dest: "clickhouse-client --connection demo",
 		SourceDB: srcDB, DestDB: dstDB, HMACKey: testKey,
 	}
 }

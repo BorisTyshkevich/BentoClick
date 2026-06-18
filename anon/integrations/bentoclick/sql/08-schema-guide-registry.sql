@@ -20,7 +20,7 @@ CREATE DATABASE IF NOT EXISTS bentoclick;
 CREATE TABLE IF NOT EXISTS bentoclick.schema_guide_data
 (
     run_id        String,
-    anon_database String,                                   -- the FROM the LLM uses: claude_otel_anon, system_anon, …
+    anon_database String,                                   -- the FROM the LLM uses: mydb_anon, system_anon, …
     model         Enum8('tokenizing' = 1, 'schema-preserving' = 2),
     naming        Enum8('tokens' = 1, 'real' = 2),          -- are table/column NAMES tokens or real?
     table_name    String,                                   -- token (tokenizing) or real (schema-preserving)
@@ -42,7 +42,7 @@ SELECT run_id, anon_database, model, naming, table_name, table_role,
        total_rows, sandbox_rows, position, column_name, type, class, usage
 FROM bentoclick.schema_guide_data FINAL;
 
-ALTER TABLE bentoclick.schema_guide MODIFY COMMENT '{"title":"describe_schema","description":"START HERE. Lists every TOKENIZED MASKED SANDBOX you may query, one row per (anon_database, table, column). Filter by anon_database (the database you query, e.g. claude_otel_anon or system_anon). naming says whether table/column NAMES are tokens (tbl_<hex>/col_<hex>) or real. class is the contract per column: real = verbatim value, filter/group/aggregate freely; identifier = a deterministic token, use only for GROUP BY/JOIN/uniq (the literal is meaningless but it relabels to the real value for the human who views the dashboard); redacted = masked free text, never filter/group/show; attrmap = a Map whose keys are real and values are per-key roles (call describe_attributes). You query the sandbox with tokens/masked values; a saved dashboard is de-tokenized and the sandbox DB is rewritten to the real DB at view time, so the human sees real identifiers and data. The sandbox is a SAMPLE (sandbox_rows << total_rows): report ratios and shapes, not absolute totals."}';
+ALTER TABLE bentoclick.schema_guide MODIFY COMMENT '{"title":"describe_schema","description":"START HERE. Lists every TOKENIZED MASKED SANDBOX you may query, one row per (anon_database, table, column). Filter by anon_database (the database you query, e.g. mydb_anon or system_anon). naming says whether table/column NAMES are tokens (tbl_<hex>/col_<hex>) or real. class is the contract per column: real = verbatim value, filter/group/aggregate freely; identifier = a deterministic token, use only for GROUP BY/JOIN/uniq (the literal is meaningless but it relabels to the real value for the human who views the dashboard); redacted = masked free text, never filter/group/show; attrmap = a Map whose keys are real and values are per-key roles (call describe_attributes). You query the sandbox with tokens/masked values; a saved dashboard is de-tokenized and the sandbox DB is rewritten to the real DB at view time, so the human sees real identifiers and data. The sandbox is a SAMPLE (sandbox_rows << total_rows): report ratios and shapes, not absolute totals."}';
 
 CREATE TABLE IF NOT EXISTS bentoclick.attr_guide_data
 (

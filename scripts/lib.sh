@@ -13,7 +13,7 @@
 # Transport: by default ch_query POSTs to the ClickHouse HTTP endpoint as the
 # admin user (curl + .netrc). For clusters with no reachable admin HTTP endpoint
 # (e.g. kubectl-only access), set CH_EXEC_CMD to a clickhouse-client wrapper
-# such as `cl otel`; ch_query then pipes the SQL to it instead. update.sh wires
+# such as `cl <cluster>`; ch_query then pipes the SQL to it instead. update.sh wires
 # this from its --exec flag.
 CH_EXEC_CMD=()
 

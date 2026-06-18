@@ -33,19 +33,19 @@ dictionary) and `${DB}_definer` (to resolve tokens inside the DEFINER view).
 
 ## Topology
 
-| | OTEL (source) | DEMO (sandbox) |
+| | SOURCE | DEST (sandbox) |
 |---|---|---|
-| Real data | `claude_otel.*` | — (none) |
-| Masked data | — | `claude_otel.*` (token tables) |
+| Real data | `mydb.*` | — (none) |
+| Masked data | — | `mydb.*` (token tables) |
 | De-anon secret | `${SECRET_DB}.{identifier_map, masking_plan}` + `token_to_real` dict (e.g. `bentosecrets`) | — |
 | Tokens-only meta | — | `${META_DB}.{profile_*, generated_objects, manifest}` |
 | bentoclick | `bentoclick.*` (dashboards_raw → dashboards_tok → dashboards view) + `token_to_real` dict | — |
 | LLM touches | writes token specs; reads `dashboards_tok` (tokens) | reads sandbox + `profile_*` (tokens) |
-| Human touches | reads `bentoclick.dashboards` (real), runs panel SQL on `claude_otel.*` | — |
+| Human touches | reads `bentoclick.dashboards` (real), runs panel SQL on `mydb.*` | — |
 
 ## Principals
 
-### OTEL (source)
+### SOURCE
 
 | Principal | Type | Grants | Explicitly denied |
 |---|---|---|---|
@@ -55,12 +55,12 @@ dictionary) and `${DB}_definer` (to resolve tokens inside the DEFINER view).
 | `anon_author_role` | LLM role | `INSERT(cols) ${DB}.dashboards_raw`; `SELECT ${DB}.dashboards_tok` (tokens) | `${DB}.dashboards` (view), `token_to_real`, `${SECRET_DB}.*`, `${META_DB}.*`, `${DATA_DB}.*` |
 | `${DB}_anon_viewer_role` | human role | `SELECT ${DB}.dashboards` (de-tok view) + `${DB}.dashboards_prefix`; **plus the viewer's own `${DATA_DB}` grants, assigned per-user** | `dashboards_tok`, `dashboards_raw`, `token_to_real`, `${SECRET_DB}.*`, `${META_DB}.*` |
 
-### DEMO (sandbox)
+### DEST (sandbox)
 
 | Principal | Type | Grants | Notes |
 |---|---|---|---|
 | `anond` | service user | `CREATE DATABASE`; `SELECT, INSERT, CREATE TABLE, DROP TABLE, DROP DATABASE` (sandbox DBs + `${META_DB}` profile); `SELECT system.*` | `CREATE DATABASE` is the one unavoidable broad grant (sandbox DB names are dynamic); foreign-object safety is enforced in anond's code, not RBAC |
-| `anon_mcp_reader` | LLM explore role | `SELECT` on sandbox `claude_otel.*` (masked) + `${META_DB}.profile_*` | `identifier_map`/`masking_plan` don't exist here (trusted split) |
+| `anon_mcp_reader` | LLM explore role | `SELECT` on sandbox `mydb.*` (masked) + `${META_DB}.profile_*` | `identifier_map`/`masking_plan` don't exist here (trusted split) |
 
 ## How the LLM is authored vs how the human views (the split)
 

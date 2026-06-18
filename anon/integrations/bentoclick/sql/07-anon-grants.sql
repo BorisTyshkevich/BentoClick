@@ -1,4 +1,4 @@
--- otel anon dashboard pipeline — grants (apply via: cl otel --multiquery < grants.sql)
+-- anon dashboard pipeline — grants (apply via: cl <cluster> --multiquery < grants.sql)
 --
 -- The de-tok materialized view runs as DEFINER bentoclick_definer and calls
 -- detok() → dictGetOrDefault on the token→real dictionary, so the definer needs

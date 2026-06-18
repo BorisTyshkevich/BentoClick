@@ -10,7 +10,7 @@
 //	cleanup  drop ONLY objects this tool registered in the dest registry
 //
 // Cluster targeting: --source / --dest take whitespace-split command prefixes
-// that accept clickhouse-client flags ("cl otel", "clickhouse-client
+// that accept clickhouse-client flags ("cl <cluster>", "clickhouse-client
 // --connection demo"). --connection <name> is sugar for source = dest =
 // "clickhouse-client --connection <name>" (single-cluster mode). Omitting
 // --dest means dest = source.
@@ -79,7 +79,7 @@ type clusterFlags struct {
 func commonFlags(fs *flag.FlagSet) clusterFlags {
 	return clusterFlags{
 		conn:   fs.String("connection", "", "clickhouse-client connection name (single-cluster sugar)"),
-		source: fs.String("source", "", `source cluster command prefix, e.g. "cl otel"`),
+		source: fs.String("source", "", `source cluster command prefix, e.g. "cl <cluster>"`),
 		dest:   fs.String("dest", "", "dest (sandbox) cluster command prefix (default: same as source)"),
 		metaDB: fs.String("meta-db", "bentoclick", "metadata database (profile_*, generated_objects, manifest)"),
 	}

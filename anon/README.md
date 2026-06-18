@@ -16,27 +16,27 @@ Not yet integrated with altinity-mcp; this branch is a separate experiment.
 make build
 export ANON_HMAC_KEY="$(openssl rand -hex 32)"   # keep as secret as the data
 
-# cross-cluster: discover+mask on otel, sandbox+profile on demo
-./bin/anond run --source "cl otel" --source-db claude_otel \
-  --dest "clickhouse-client --connection demo" --dest-db claude_otel \
+# cross-cluster: discover+mask on the source cluster, sandbox+profile on demo
+./bin/anond run --source "cl <cluster>" --source-db mydb \
+  --dest "clickhouse-client --connection demo" --dest-db mydb \
   --hmac-key-file ~/.anon-hmac-key
 
 # single-cluster mode (--connection is sugar for source = dest)
 ./bin/anond run --connection demo --source-db git
 
 # inspect the (tokens-only) profile — read from the DEST
-./bin/anond print --source "cl otel" --dest "clickhouse-client --connection demo" --section catalog
+./bin/anond print --source "cl <cluster>" --dest "clickhouse-client --connection demo" --section catalog
 ./bin/anond print --connection demo --section workload
 
 # acceptance checks: no-survivor + sandbox integrity + trusted split
-./bin/anond verify --source "cl otel" --dest "clickhouse-client --connection demo"
+./bin/anond verify --source "cl <cluster>" --dest "clickhouse-client --connection demo"
 
 # drop everything the tool created on the dest (and nothing else)
-./bin/anond cleanup --source "cl otel" --dest "clickhouse-client --connection demo" --include-meta
+./bin/anond cleanup --source "cl <cluster>" --dest "clickhouse-client --connection demo" --include-meta
 ```
 
 `--source`/`--dest` take whitespace-split command prefixes that accept
-clickhouse-client flags (a wrapper like `cl otel` works). Omitting `--dest`
+clickhouse-client flags (a wrapper like `cl <cluster>` works). Omitting `--dest`
 means dest = source. `run` mirrors exactly one database (`--source-db`,
 required); `--dest-db` names the sandbox database on the dest (default: the
 source DB name).

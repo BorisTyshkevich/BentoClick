@@ -124,8 +124,8 @@
 
 <h1>anond — anonymized ClickHouse discovery &amp; sandbox</h1>
 <p class="subtitle">Architecture reference · v1.1 cross-cluster target state ·
-single-database mirror semantics (source <code>claude_otel</code> → sandbox
-<code>claude_otel</code>)</p>
+single-database mirror semantics (source <code>mydb</code> → sandbox
+<code>mydb</code>)</p>
 
 <!-- ================================================================ -->
 <h2 id="overview">1. Overview</h2>
@@ -199,12 +199,12 @@ LLM.</p>
   <rect x="24" y="66" width="250" height="250" rx="8"
         fill="#ffffff" stroke="#2563a8" stroke-width="2"/>
   <text x="149" y="90" font-size="14" font-weight="700" fill="#2563a8"
-        text-anchor="middle">SOURCE cluster (otel)</text>
+        text-anchor="middle">SOURCE cluster</text>
 
   <rect x="38" y="102" width="222" height="52" rx="5"
         fill="#f3f8fd" stroke="#7fa8d4"/>
   <text x="149" y="123" font-size="12.5" font-weight="600"
-        text-anchor="middle">claude_otel — real DB</text>
+        text-anchor="middle">mydb — real DB</text>
   <text x="149" y="139" font-size="11.5" fill="#5b6470"
         text-anchor="middle">real tables · real data</text>
 
@@ -267,7 +267,7 @@ LLM.</p>
   <rect x="620" y="102" width="280" height="92" rx="5"
         fill="#fffaf0" stroke="#c8923a"/>
   <text x="760" y="121" font-size="12.5" font-weight="700"
-        text-anchor="middle">claude_otel — sandbox DB</text>
+        text-anchor="middle">mydb — sandbox DB</text>
   <text x="760" y="137" font-size="11" fill="#5b6470"
         text-anchor="middle">(operator-named, mirrors source name)</text>
   <text x="760" y="156" font-size="12" font-family="ui-monospace, Menlo, Consolas, monospace"
@@ -385,7 +385,7 @@ trusted instruments, which de-tokenize against the source-side map.</figcaption>
     </tr>
     <tr>
       <td class="crosses">Operator-disclosed sandbox DB name (e.g.
-        <code>claude_otel</code>) — only when the operator chooses
+        <code>mydb</code>) — only when the operator chooses
         <code>--dest-db</code> equal to the source DB name</td>
       <td class="never">Real query text — raw <code>system.query_log</code>
         rows mined on the source; only normalized, tokenized shapes reach the
@@ -644,7 +644,7 @@ a view would compute the hash per row and full-scan.</p>
     security path.</li>
   <li><strong>One operator-controlled exception.</strong> When
     <code>--dest-db</code> equals the source DB name (mirror semantics, e.g.
-    <code>claude_otel</code> → <code>claude_otel</code>), the DB-level name is
+    <code>mydb</code> → <code>mydb</code>), the DB-level name is
     operator-disclosed and kept verbatim so profile and sandbox agree. Tables
     and columns inside are always token-named.</li>
 </ul>

@@ -1,12 +1,12 @@
 -- anond × bentoclick — RBAC for the de-tok dictionary + the LLM/viewer split.
--- Apply on OTEL (where bentoclick + real data live) BEFORE 01/02/03.
+-- Apply on the source cluster (where bentoclick + real data live) BEFORE 01/02/03.
 -- See docs/RBAC.md for the full model and the threat analysis.
 --
 -- Params: ${DB} (dashboard DB, e.g. bentoclick), ${META_DB} (anond meta +
 -- LLM-facing registry DB, e.g. bentoclick), ${SECRET_DB} (de-anon secret DB
 -- holding identifier_map + the token_to_real dict, e.g. bentosecrets — MUST be
 -- isolated from any "read all dashboards" grant), ${DATA_DB} (real data DB,
--- e.g. claude_otel), ${CLUSTER}, ${DICT_READER_PW} (a secret you supply; rotate
+-- e.g. mydb), ${CLUSTER}, ${DICT_READER_PW} (a secret you supply; rotate
 -- like any DB credential).
 
 -- 1. Dictionary-reader user. The ONLY principal that reads the de-anon map

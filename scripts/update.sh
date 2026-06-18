@@ -18,7 +18,7 @@
 #     [asset ...]                           # e.g. dash.js charts.js spa.js dash-theme.css
 #
 # Usage (exec — kubectl-only cluster, no admin HTTP endpoint):
-#   ./scripts/update.sh --exec='cl otel' dash.js
+#   ./scripts/update.sh --exec='cl <cluster>' dash.js
 #     --exec routes the SQL through a clickhouse-client wrapper (the SQL is
 #     piped to `<exec> --multiquery`). Use this when admin access is via
 #     `kubectl exec` rather than a reachable HTTPS endpoint. --ch-host /
@@ -69,7 +69,7 @@ cd "$ROOT"
 source "$SCRIPT_DIR/lib.sh"
 
 # Transport: --exec routes SQL through a clickhouse-client wrapper (e.g.
-# `cl otel`) for kubectl-only clusters with no admin HTTP endpoint; otherwise
+# `cl <cluster>`) for kubectl-only clusters with no admin HTTP endpoint; otherwise
 # POST over HTTP as --ch-user (password from CH_PASSWORD / --ch-password).
 if [[ -n "$EXEC" ]]; then
   read -r -a CH_EXEC_CMD <<< "$EXEC"   # consumed by lib.sh's ch_query

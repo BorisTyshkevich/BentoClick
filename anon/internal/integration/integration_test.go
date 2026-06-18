@@ -11,7 +11,7 @@
 //
 // Cross-cluster suite (source via a wrapper command, dest via a connection):
 //
-//	ANON_TEST_SOURCE_CMD="cl otel" ANON_TEST_SOURCE_DB=claude_otel \
+//	ANON_TEST_SOURCE_CMD="cl <cluster>" ANON_TEST_SOURCE_DB=mydb \
 //	ANON_TEST_DEST_CONNECTION=demo go test -run TestCrossCluster ./internal/integration/...
 //
 // Tests use a private meta DB (altinity_anontest_<pid>) and a test-named dest
@@ -162,7 +162,7 @@ func seedRegistry(t *testing.T, ex chclient.Executor, db string) {
 }
 
 // setupCross: source = ANON_TEST_SOURCE_CMD (db ANON_TEST_SOURCE_DB, default
-// claude_otel), dest = ANON_TEST_DEST_CONNECTION.
+// mydb), dest = ANON_TEST_DEST_CONNECTION.
 func setupCross(t *testing.T) *fixture {
 	src := os.Getenv("ANON_TEST_SOURCE_CMD")
 	dst := os.Getenv("ANON_TEST_DEST_CONNECTION")
@@ -171,7 +171,7 @@ func setupCross(t *testing.T) *fixture {
 	}
 	srcDB := os.Getenv("ANON_TEST_SOURCE_DB")
 	if srcDB == "" {
-		srcDB = "claude_otel"
+		srcDB = "mydb"
 	}
 	return setup(t, src, "clickhouse-client --connection "+dst, srcDB,
 		fmt.Sprintf("anontest_xc_%d", os.Getpid()), true)

@@ -3,7 +3,7 @@
 --
 -- Source of truth is anond's de-anon secret `${SECRET_DB}.identifier_map`
 -- (kind, original, token), which a cross-cluster anond run lands on the SOURCE
--- cluster — i.e. this cluster (otel), the one that holds real data and
+-- cluster — i.e. the source cluster, the one that holds real data and
 -- hosts bentoclick. Both the dictionary and its source live in ${SECRET_DB}
 -- (isolated from the LLM-facing ${META_DB}/registry). The dictionary exposes
 -- only the reverse lookup token -> original.

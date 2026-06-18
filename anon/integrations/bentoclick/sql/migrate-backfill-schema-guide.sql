@@ -2,12 +2,12 @@
 -- so the registry serves both without re-running the producers. Going forward
 -- anond writes these rows directly. Safe to re-run (ReplacingMergeTree).
 
--- claude_otel_anon — tokenizing model, from anond's profile_* (latest run).
+-- mydb_anon — tokenizing model, from anond's profile_* (latest run).
 INSERT INTO bentoclick.schema_guide
   (run_id, anon_database, model, naming, table_name, table_role, total_rows, sandbox_rows, position, column_name, type, class, usage)
 SELECT
     c.run_id,
-    'claude_otel_anon', 'tokenizing', 'tokens',
+    'mydb_anon', 'tokenizing', 'tokens',
     c.table_token, c.role, c.total_rows, c.sandbox_rows,
     col.position, col.col_token, col.type_tok,
     multiIf(col.class IN ('time','measure','enum'), 'real',
@@ -45,11 +45,11 @@ SELECT
             class)
 FROM system_anon.schema_guide;
 
--- attr_guide — attrmap key roles for claude_otel_anon (from anond's profile_attr_keys).
+-- attr_guide — attrmap key roles for mydb_anon (from anond's profile_attr_keys).
 INSERT INTO bentoclick.attr_guide
   (run_id, anon_database, table_name, column_name, attr_key, role, usage)
 SELECT
-    run_id, 'claude_otel_anon', table_token, col_token, attr_key, role,
+    run_id, 'mydb_anon', table_token, col_token, attr_key, role,
     multiIf(role = 'vocabulary', 'real value: filter and group',
             role = 'measure',    'real number: aggregate',
             role = 'identity',   'masked: GROUP BY only, relabels to real for the human',

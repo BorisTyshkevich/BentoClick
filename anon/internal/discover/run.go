@@ -29,7 +29,7 @@ import (
 
 type Config struct {
 	// Source and Dest are whitespace-split command prefixes that accept
-	// clickhouse-client flags, e.g. "cl otel" / "clickhouse-client
+	// clickhouse-client flags, e.g. "cl <cluster>" / "clickhouse-client
 	// --connection demo". Equal strings mean single-cluster mode.
 	Source string
 	Dest   string

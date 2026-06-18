@@ -7,7 +7,7 @@ value; the human never sees a token.
 
 This lives on the `experiment/anon-discovery` branch; the upstream
 [bentoclick](https://github.com/BorisTyshkevich/bentoclick) clone is left
-untouched. These are the objects an operator applies to the **otel** cluster
+untouched. These are the objects an operator applies to the source cluster
 (where bentoclick is deployed and real data lives) on top of a stock
 bentoclick install.
 
@@ -31,7 +31,7 @@ runs real SQL for the human, no LLM in the data path.
 - The LLM works **only** with anonymized data: it explores anond's
   tokens-only profile + masked sandbox (on the demo/sandbox cluster) and
   composes panel SQL using token identifiers
-  (`SELECT col_5ab2d3a7 FROM claude_otel.tbl_5f5c0ed2 …`). Tokens are global
+  (`SELECT col_5ab2d3a7 FROM mydb.tbl_5f5c0ed2 …`). Tokens are global
   and HMAC-deterministic, so the same token names the same real object on
   every cluster.
 - Authoring is a **loop** — read existing spec, modify, save again — so the
@@ -54,7 +54,7 @@ runs real SQL for the human, no LLM in the data path.
   Human (browser, OAuth) ─────►  ${DB}.dashboards     (de-tokenized REAL SQL)
                                       │  SPA runs panel SQL as the viewer
                                       ▼
-                                 real otel data ► rendered dashboard
+                                 real source data ► rendered dashboard
 ```
 
 The SPA's query is **unchanged** (`FROM ${DB}.dashboards FINAL …`):
@@ -70,7 +70,7 @@ stale).
 
 ## The ClickHouse objects
 
-Apply on otel, in order, on top of a stock bentoclick install:
+Apply on the source cluster, in order, on top of a stock bentoclick install:
 
 | File | Object | Purpose |
 |---|---|---|
@@ -91,10 +91,10 @@ collision) is what lets de-tok be a textual replace. `detok` does
 `replaceRegexpAll` with `\b` boundaries → `dictGetOrDefault(..., tok)`.
 
 Verified on CH 26.3:
-- `… col_5ab2d3a7 FROM claude_otel.tbl_5f5c0ed2 WHERE col_5ab2d3a7 > {{n}}`
-  → `… ServiceName FROM claude_otel.otel_logs WHERE ServiceName > {{n}}`
+- `… col_5ab2d3a7 FROM mydb.tbl_5f5c0ed2 WHERE col_5ab2d3a7 > {{n}}`
+  → `… ServiceName FROM mydb.otel_logs WHERE ServiceName > {{n}}`
   (tokens expanded, `{{n}}` runtime param preserved, the operator-disclosed
-  `claude_otel` db kept verbatim).
+  `mydb` db kept verbatim).
 - An unknown token passes through unchanged → CH errors loudly at query time
   rather than corrupting silently.
 - `\b` stops an 8-hex token expanding inside a 16-hex (collision-widened)
@@ -125,15 +125,15 @@ The de-tok view is `SQL SECURITY DEFINER`, so:
   read fails with an auth error — correct).
 
 The disclosed-DB rule from anond carries over: when the sandbox DB is named
-after the source DB (`--dest-db = --source-db`, e.g. both `claude_otel`), the
+after the source DB (`--dest-db = --source-db`, e.g. both `mydb`), the
 DB name is operator-disclosed and `KeepVerbatim`'d, so it appears in both the
 token spec and the de-tok output identically.
 
 ## What feeds the dictionary
 
 `token_to_real` reads `${SECRET_DB}.identifier_map`, which a cross-cluster
-anond run lands on the source side (otel) — already in place from
-`anond run --source "cl otel" --source-db claude_otel --dest "… demo" …`.
+anond run lands on the source side — already in place from
+`anond run --source "cl <cluster>" --source-db mydb --dest "… demo" …`.
 In production, whatever keeps `identifier_map` fresh (the anond CLI now; the
 deferred anond-in-MCP job later) is orthogonal to this integration; the
 dictionary's `LIFETIME` picks up additions automatically.
@@ -148,9 +148,10 @@ dictionary's `LIFETIME` picks up additions automatically.
   (`sql/00-anon-rbac.sql`); credentials are server-side and leak nowhere.
   Full model in [`../../docs/RBAC.md`](../../docs/RBAC.md).
 - **The LLM authoring transport** (anonymized-mode altinity-mcp that exposes
-  only the tokenized tier + the anond sandbox/profile, and refuses otel's
-  real tables) is the deferred anond-MCP work; until then specs can be
+  only the tokenized tier + the anond sandbox/profile, and refuses the source
+  cluster's real tables) is the deferred anond-MCP work; until then specs can be
   hand-authored as token JSON into `dashboards_raw`.
-- **Not yet applied to otel** — these objects are reviewed and unit-verified
-  on demo (26.3) but not deployed. A live end-to-end (author a token spec →
-  SPA renders real `claude_otel` data on otel) is the next step.
+- **Not yet applied to the source cluster** — these objects are reviewed and
+  unit-verified on the demo cluster (26.3) but not deployed. A live end-to-end
+  (author a token spec → SPA renders real `mydb` data on the source cluster) is
+  the next step.
