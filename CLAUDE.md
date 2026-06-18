@@ -93,8 +93,19 @@ isolation. The fetch path is mocked via the `DASH.fetch` seam.
 3. If the panel introduces a new column behavior (e.g. accepts HTML),
    extend `sanitize_panel` in `schema/01-database.sql` *and* add a
    case to `tests/schema/test_sanitize_panel.py`.
-4. Document it in `skills/bentoclick/panels/<name>.md`.
-5. Add a fixture and assertion to `tests/e2e/spec-render.test.js`.
+4. Add the new type to the known-panel-type set in the `WHERE` throwIf
+   gates of **both** MVs (`schema/01-database.sql` and
+   `anon/integrations/bentoclick/sql/03-dashboards-anon.sql` — the SELECT
+   bodies must stay identical), or the MV will reject specs that use it.
+   Ship a migration (`schema/migrations/`,
+   `anon/.../migrate-mv-spec-validation.sql`) — both use
+   `ALTER TABLE … MODIFY QUERY` to swap the SELECT in place — so existing
+   clusters pick up the widened set; `install.sh`'s `CREATE … IF NOT
+   EXISTS` no-ops on an already-installed MV. Update the accept list in
+   `tests/schema/test_spec_validation.py`. (Adding a type is additive
+   within v1 — no `spec_version` bump; see `docs/SPEC_VERSIONING.md`.)
+5. Document it in `skills/bentoclick/panels/<name>.md`.
+6. Add a fixture and assertion to `tests/e2e/spec-render.test.js`.
 
 ## What stays out
 

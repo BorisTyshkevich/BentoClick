@@ -11,7 +11,7 @@ both write the shared `bentoclick.schema_guide` registry.
 cd ../anon
 go build -o bin/anond ./cmd/anond
 ./bin/anond run --model=schema-preserving \
-  --source "cl otel" --source-db system --dest "cl otel" --dest-db system_anon \
+  --source "cl <cluster>" --source-db system --dest "cl <cluster>" --dest-db system_anon \
   --hmac-key-file ~/.sysanon-seed --window-days 30 --sample-rows 1000000
 ```
 
@@ -39,5 +39,14 @@ types (Tuple/Nested) and nested dotted subcolumns are dropped.
 
 The four sample system-health dashboards remain in `../samples/system/` as
 concrete examples (their ClickHouse-specific authoring guidance lives with the
-altinity-skills, not here). `dashboards-mv.sql` documents the live generic
-`<db>_anon → <db>` de-tok MV rewrite from Phase 1.
+altinity-skills, not here).
+
+The old `dashboards-mv.sql` snapshot (a hand-captured, write-time-detok MV with
+hardcoded per-database rewrites and a stale dictionary reference) has been
+**deleted** — it is superseded by the generic read-time `detok` UDF
+(`<x>_anon → <x>` for any `<x>`, sourced from the `token_to_real` dict). The
+dashboards MV is generated entirely from repo source:
+`anon/integrations/bentoclick/sql/03-dashboards-anon.sql`, with spec validation
+(issue #16) applied to existing installs via
+`schema/migrations/0001-mv-spec-validation.sql` (`ALTER TABLE … MODIFY QUERY`,
+which preserves the `dashboards_tok` TO target).

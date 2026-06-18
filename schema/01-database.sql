@@ -148,10 +148,53 @@ CREATE OR REPLACE FUNCTION sanitize_json_text AS (s) ->
         '(?i)javascript:', '');
 
 -- The MV parses the agent-supplied JSON text into the read target's
--- structured types. Sanitization runs once over the panels text
--- before JSONExtract — single regex pass per row, no per-element
--- stringify/parse hops. The other JSON columns (params, meta, tags)
--- are parsed directly; they don't contain user-supplied HTML.
+-- structured types AND validates the spec contract on the way through.
+-- Sanitization runs once over the panels text before JSONExtract —
+-- single regex pass per row, no per-element stringify/parse hops. The
+-- other JSON columns (params, meta, tags) are parsed directly; they
+-- don't contain user-supplied HTML.
+--
+-- Validation (issue #16): each JSON column is parsed inline in the
+-- SELECT; the WHERE runs throwIf gates over the parsed columns
+-- (panels/params) and over slug/title/spec_version directly. Each
+-- throwIf returns 0 when the spec is OK and aborts the INSERT otherwise
+-- (CH error 395, FUNCTION_THROW_IF_VALUE_IS_NON_ZERO). All validation
+-- lives in the MV — there are no CHECK constraints on the Null source
+-- table (ALTER ADD CONSTRAINT is unsupported on Null in CH 26.3, so
+-- they couldn't be carried onto an existing cluster by a migration).
+--
+-- Analyzer note: gating in the WHERE over the SELECT-list aliases is
+-- safe on BOTH the new and the OLD ClickHouse analyzer. Parsing inline
+-- as `JSONExtract(col) AS col` references the source column directly; a
+-- WITH alias re-aliased back to its source column name instead trips
+-- CYCLIC_ALIASES on the old analyzer. Both must work: the MV re-analyzes
+-- its SELECT at INSERT time with the *inserter's* `enable_analyzer`
+-- setting (and a migration is analyzed with whatever the applying
+-- session uses), and either may be the old analyzer. Verified on CH 26.3
+-- with enable_analyzer = 1 and = 0.
+--
+-- Compatibility rule (owner decision): a NEW MV accepts OLD specs; an
+-- OLD MV declines specs NEWER than it knows. So validation is fail-
+-- closed on "newer than known" — spec_version is gated as a ceiling
+-- (> MAX_KNOWN, currently 1) rather than pinned, and panel/param types
+-- outside the known sets are rejected. A minimal spec (slug+title only)
+-- always passes.
+--
+-- The known panel-type and param-type sets are written inline below.
+-- They MUST stay in sync with the runtime dispatcher (runtime/v1/dash.js
+-- PANELS) — a cross-check test in tests/schema/test_spec_validation.py
+-- guards the drift. When v2 ships, widen the spec_version ceiling and
+-- extend these sets (see CLAUDE.md "How to add a panel type").
+--
+-- ⚠ This SELECT body (SELECT + WHERE gates) is duplicated VERBATIM in
+-- anon/integrations/bentoclick/sql/03-dashboards-anon.sql (which only
+-- swaps the TO target to dashboards_tok). Keep them identical — tokens
+-- don't touch the validated fields.
+--
+-- JSON access note (CH 26.3 spike): the native `p.field.:Array(String)`
+-- subcolumn cast misparses/misreads inside a lambda, so field access
+-- goes through JSONExtractString(toJSONString(p), ...) — returns '' for
+-- a missing field (deterministic; no NULL slips past the gate).
 --
 -- SQL SECURITY DEFINER: the destination INSERT into `${DB}.dashboards`
 -- runs with ${DB}_definer's privileges (the only principal with
@@ -171,13 +214,36 @@ SELECT
     subtitle,
     concurrent,
     spec_version,
-    JSONExtract(params,                          'Array(JSON)')   AS params,
-    JSONExtract(sanitize_json_text(panels),      'Array(JSON)')   AS panels,
-    CAST(meta AS JSON)                                            AS meta,
-    JSONExtract(tags,                            'Array(String)') AS tags,
-    currentUser()                                                 AS owner,
-    now()                                                         AS updated_at
-FROM ${DB}.dashboards_raw;
+    JSONExtract(params,                     'Array(JSON)')   AS params,
+    JSONExtract(sanitize_json_text(panels), 'Array(JSON)')   AS panels,
+    CAST(meta AS JSON)                                       AS meta,
+    JSONExtract(tags,                       'Array(String)') AS tags,
+    currentUser()                                            AS owner,
+    now()                                                    AS updated_at
+FROM ${DB}.dashboards_raw
+WHERE throwIf(slug = '' OR title = '',
+              'bentoclick: slug and title must be non-empty') = 0
+  AND throwIf(spec_version = 0 OR spec_version > 1,
+              'bentoclick: spec_version out of supported range [1..1]; declining a spec newer than this MV') = 0
+  AND throwIf(NOT arrayAll(p ->
+                JSONExtractString(toJSONString(p), 'type') IN
+                  ('kpi-strip','table','bars','markdown','hero','callouts',
+                   'html','script','line','combo','chart','dataset'),
+                panels),
+              'bentoclick: panel has an unknown or empty type') = 0
+  AND throwIf(arrayExists(p ->
+                JSONExtractString(toJSONString(p), 'query')  != ''
+                AND JSONExtractString(toJSONString(p), 'source') != '',
+                panels),
+              'bentoclick: panel sets both query and source') = 0
+  AND throwIf(NOT arrayAll(p ->
+                JSONExtractString(toJSONString(p), 'name') != ''
+                AND JSONExtractString(toJSONString(p), 'type') IN
+                  ('int','enum','date','string')
+                AND (JSONExtractString(toJSONString(p), 'type') != 'enum'
+                     OR length(JSONExtractArrayRaw(toJSONString(p), 'options')) > 0),
+                params),
+              'bentoclick: invalid param (needs non-empty name, type in {int,enum,date,string}, enum needs options)') = 0;
 
 -- dashboards_prefix — returns the SPA URL prefix the caller should
 -- append a slug to in order to produce a share URL. Owner segment is

@@ -50,10 +50,20 @@ ORDER BY (owner, slug);
 INSERT INTO ${DB}.dashboards_tok
 SELECT * FROM ${DB}.dashboards;
 
--- 3. Re-point the sanitize MV at the tokenized store. The SELECT body MUST
---    match your installed bentoclick version EXACTLY except for the TO
---    target; reproduced here from v0.1.0 (schema/01-database.sql). If your
---    bentoclick differs, copy its dashboards_mv body and change only TO.
+-- 3. Re-point the sanitize+validate MV at the tokenized store. The SELECT
+--    body (SELECT + WHERE gates) MUST match the installed bentoclick
+--    version EXACTLY except for the TO target; reproduced here VERBATIM
+--    from schema/01-database.sql (issue #16 spec-validation gates). The
+--    validated fields (slug/title, spec_version, panel/param types,
+--    query/source) are token-invariant, so validation is identical in
+--    anon mode. Each JSON column is parsed inline; the WHERE runs the
+--    throwIf gates over the parsed columns. (Gating over the SELECT
+--    aliases is analyzer-safe; a WITH block re-aliased to the source
+--    column name trips CYCLIC_ALIASES on the old analyzer — see
+--    schema/01-database.sql.)
+--    NB: this is the initial anon re-point (TO changes dashboards ->
+--    dashboards_tok), so it is DROP VIEW + CREATE. Later validation-only
+--    changes use ALTER TABLE … MODIFY QUERY (migrate-mv-spec-validation.sql).
 DROP VIEW IF EXISTS ${DB}.dashboards_mv ON CLUSTER '{cluster}';
 CREATE MATERIALIZED VIEW IF NOT EXISTS ${DB}.dashboards_mv
   ON CLUSTER '{cluster}'
@@ -66,13 +76,36 @@ SELECT
     subtitle,
     concurrent,
     spec_version,
-    JSONExtract(params,                          'Array(JSON)')   AS params,
-    JSONExtract(sanitize_json_text(panels),      'Array(JSON)')   AS panels,
-    CAST(meta AS JSON)                                            AS meta,
-    JSONExtract(tags,                            'Array(String)') AS tags,
-    currentUser()                                                 AS owner,
-    now()                                                         AS updated_at
-FROM ${DB}.dashboards_raw;
+    JSONExtract(params,                     'Array(JSON)')   AS params,
+    JSONExtract(sanitize_json_text(panels), 'Array(JSON)')   AS panels,
+    CAST(meta AS JSON)                                       AS meta,
+    JSONExtract(tags,                       'Array(String)') AS tags,
+    currentUser()                                            AS owner,
+    now()                                                    AS updated_at
+FROM ${DB}.dashboards_raw
+WHERE throwIf(slug = '' OR title = '',
+              'bentoclick: slug and title must be non-empty') = 0
+  AND throwIf(spec_version = 0 OR spec_version > 1,
+              'bentoclick: spec_version out of supported range [1..1]; declining a spec newer than this MV') = 0
+  AND throwIf(NOT arrayAll(p ->
+                JSONExtractString(toJSONString(p), 'type') IN
+                  ('kpi-strip','table','bars','markdown','hero','callouts',
+                   'html','script','line','combo','chart','dataset'),
+                panels),
+              'bentoclick: panel has an unknown or empty type') = 0
+  AND throwIf(arrayExists(p ->
+                JSONExtractString(toJSONString(p), 'query')  != ''
+                AND JSONExtractString(toJSONString(p), 'source') != '',
+                panels),
+              'bentoclick: panel sets both query and source') = 0
+  AND throwIf(NOT arrayAll(p ->
+                JSONExtractString(toJSONString(p), 'name') != ''
+                AND JSONExtractString(toJSONString(p), 'type') IN
+                  ('int','enum','date','string')
+                AND (JSONExtractString(toJSONString(p), 'type') != 'enum'
+                     OR length(JSONExtractArrayRaw(toJSONString(p), 'options')) > 0),
+                params),
+              'bentoclick: invalid param (needs non-empty name, type in {int,enum,date,string}, enum needs options)') = 0;
 
 -- 4. Replace the `dashboards` TABLE with the de-tokenizing DEFINER VIEW.
 --    DANGER: this drops the old read-target table. Step 2 already copied its
