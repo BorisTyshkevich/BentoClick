@@ -11,11 +11,11 @@
 // SyntaxError — that's the regression this file pins.
 //
 // After the runtime split, the production "bundle" is the topological
-// concat that install.sh produces (core/*.js + panels/*.js + dash.js
-// for the dash bundle; charts/*.js + charts.js for charts). This test
-// assembles the same order and confirms moduleToClassic still yields
-// a parseable, self-contained classic script with the window.DASH
-// assignment intact.
+// concat that scripts/install.sh and scripts/update.sh produce
+// (core/*.js + panels/*.js + dash.js for the dash bundle; charts/*.js +
+// charts.js for charts). This test assembles the same order and confirms
+// moduleToClassic still yields a parseable, self-contained classic script
+// with the window.DASH assignment intact.
 //
 // Unit-level coverage for moduleToClassic itself lives in
 // spa.helpers.test.js (the helper now exports from spa-helpers.js).
@@ -29,9 +29,10 @@ import { moduleToClassic } from '../../../runtime/v1/spa-helpers.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const runtimeDir = join(here, '../../../runtime/v1');
 
-// Topological order must match install.sh's bundle_concat invocations.
-// Keep this list in sync with the install.sh bundler — a missing file
-// here means the bundle is shipping less than tests cover.
+// Topological order must match the canonical bundle lists in
+// scripts/lib.sh (DASH_BUNDLE / CHARTS_BUNDLE), shared by install.sh and
+// update.sh. Keep this list in sync — a missing file here means the
+// bundle is shipping less than tests cover.
 const CHARTS_BUNDLE = [
   'charts/palette.js',
   'charts/scales.js',

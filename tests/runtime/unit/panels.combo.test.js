@@ -115,6 +115,25 @@ describe('renderCombo', () => {
     expect(new Set(fills).size).toBe(1); // all the same colour, not per-row
   });
 
+  it('draws slim bars at the approved 60% band width (40% gap)', () => {
+    const state = makeState();
+    const el = PANELS.combo({ ...basic, bars: { key: 'flights', label: 'Flights' } }, state, ctx());
+    // 24 bars (an hourly series) keeps bandwidth under the 32px cap, so the
+    // band padding governs the width. The bar should fill 60% of the band —
+    // matching the design's comboChart (`bw = (iw/n)*0.6`); it was 85% (a
+    // 0.15 pad) before, which read as too-wide, near-touching bars.
+    const rows = Array.from({ length: 24 }, (_, i) => ({ year: 2000 + i, flights: 100 + i, margin: i }));
+    state.update(rows);
+    const bars = Array.from(el.querySelectorAll('rect.chart-bar'));
+    expect(bars.length).toBe(24);
+    const center = (r) => parseFloat(r.getAttribute('x')) + parseFloat(r.getAttribute('width')) / 2;
+    const width = parseFloat(bars[0].getAttribute('width'));
+    const step = center(bars[1]) - center(bars[0]); // band step (adjacent bar centers)
+    expect(width).toBeGreaterThan(0);
+    expect(width).toBeLessThan(32); // cap not binding at this density
+    expect(width / step).toBeCloseTo(0.6, 2); // 60% band → 40% gap
+  });
+
   it('survives null series values without emitting NaN in the line path', () => {
     const state = makeState();
     const el = PANELS.combo(basic, state, ctx());

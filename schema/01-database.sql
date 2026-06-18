@@ -2,7 +2,7 @@
 --
 -- ${DB} is the dashboard database (default: `bentoclick`); ${SPA_ORIGIN}
 -- is the public origin of the ClickHouse HTTPS server hosting the SPA.
--- Both are substituted by `install.sh` (or `tests/conftest.py` in test
+-- Both are substituted by `scripts/install.sh` (or `tests/conftest.py` in test
 -- runs) before this file is applied.
 --
 -- Three storage objects make up the dashboard write path:

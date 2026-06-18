@@ -41,11 +41,12 @@ executing user-supplied SQL as the viewer's ClickHouse identity.
 
 | Path | What's there |
 |---|---|
+| `scripts/` | `install.sh` (full deploy), `update.sh` (push SPA assets only, no schema), `uninstall.sh`, and shared `lib.sh` (bundling + cluster asset upload) |
 | `schema/` | `01-database.sql` (tables, MV), `02-roles.sql` (grants) |
-| `handlers/` | ClickHouse HTTP handler XML, spliced by `install.sh` |
+| `handlers/` | ClickHouse HTTP handler XML, pushed by `scripts/install.sh` |
 | `runtime/v1/` | SPA shell + `dash.js` for `spec_version = 1` |
-| `config/*.json.tmpl` | `envsubst` templates rendered by `install.sh` |
-| `samples/` | Spec JSON installed by `install.sh` as starter dashboards |
+| `config/*.json.tmpl` | `envsubst` templates rendered by `scripts/install.sh` |
+| `samples/` | Spec JSON installed by `scripts/install.sh` as starter dashboards |
 | `skills/bentoclick/` | Generic guide-driven skill: discover → explore → author → save (incl. tokenized masked sandboxes) |
 | `anon/` | Go module (`anond`): the tokenized-masked-sandbox pipeline + the bentoclick integration SQL (`anon/integrations/bentoclick/sql/`). Unit-tested (`make go-test`, 80% floor); live no-leak suite under `internal/integration/` |
 | `tests/schema/` | pytest + clickhouse-connect against CH 26.3 |

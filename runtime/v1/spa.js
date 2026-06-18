@@ -11,9 +11,10 @@
 // is used only for the OAuth bootstrap (RFC 9728 protected-resource
 // discovery, /oauth/authorize, /oauth/token).
 //
-// Deploy: see install.sh — pushes this file to every cluster replica's
-// user_files via INSERT INTO FUNCTION clusterAllReplicas('{cluster}',
-// '<db>', '_asset_<safe-name>') against a File-engine table.
+// Deploy: see scripts/install.sh (full) or scripts/update.sh (assets only)
+// — both push this file to every cluster replica's user_files via INSERT
+// INTO FUNCTION clusterAllReplicas('{cluster}', '<db>', '_asset_<safe-name>')
+// against a File-engine table.
 
 import {
   escHtml,

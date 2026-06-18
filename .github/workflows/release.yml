@@ -1,10 +1,10 @@
 # Build and publish two release artifacts on a `v*` tag push:
 #
 #   1. `bentoclick-<version>.tar.gz` — install distro
-#      (install.sh + schema/ + runtime/ + handlers/ + config/ +
-#      samples/ + uninstall.sh + README.md), unpackable on any
-#      machine with ClickHouse credentials to bootstrap a fresh
-#      bentoclick install.
+#      (scripts/ + schema/ + runtime/ + handlers/ + config/ +
+#      samples/ + README.md), unpackable on any machine with
+#      ClickHouse credentials to bootstrap a fresh bentoclick
+#      install via ./scripts/install.sh.
 #
 #   2. `bentoclick-skill-<version>.zip` — the agent skill
 #      (skills/bentoclick/) packaged for upload to a
@@ -95,8 +95,8 @@ jobs:
           # No trailing slashes on source dirs — BSD `cp -R src/` and
           # GNU `cp -R src/` disagree on whether to copy `src` or its
           # contents. Without the slash both copy `src` as a subdir.
-          cp -R install.sh uninstall.sh README.md LICENSE \
-                schema runtime handlers config samples \
+          cp -R README.md LICENSE \
+                scripts schema runtime handlers config samples \
                 "$stage/"
           # Pin the version into the README so an unpacked tarball
           # can be cross-referenced with the release page.

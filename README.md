@@ -21,7 +21,7 @@ will bump to `spec_version = 2` and live alongside v1, per
 Once `make test` is green, run:
 
 ```bash
-./install.sh \
+./scripts/install.sh \
   --ch-host=https://<host>:8443 \
   --ch-user=<admin> \
   --ch-password=<pw> \
@@ -32,6 +32,15 @@ Once `make test` is green, run:
   [--migrate-from=<old-db>]          # if renaming from a prior install
   [--brand-name=bentoclick]          # browser-tab title
   [--accent='#00d4aa']
+```
+
+To ship only an SPA asset change (a JS/CSS/HTML edit) to a running
+cluster without re-applying schema, handlers, or samples, use
+`scripts/update.sh` instead — see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md):
+
+```bash
+CH_PASSWORD=<pw> ./scripts/update.sh \
+  --ch-host=https://<host>:8443 --ch-user=<admin> dash.js
 ```
 
 The installer:
@@ -62,7 +71,7 @@ artifacts per release:
 
 | Asset | Use |
 |---|---|
-| `bentoclick-<version>.tar.gz` | Install distro — `install.sh` + schema + runtime + handlers + config templates + samples. |
+| `bentoclick-<version>.tar.gz` | Install distro — `scripts/` (`install.sh`, `update.sh`, `uninstall.sh`, `lib.sh`) + schema + runtime + handlers + config templates + samples. |
 | `bentoclick-skill-<version>.zip` | Agent skill — `SKILL.md` + 11 panel reference docs. Upload to a claude.ai personal connector. |
 
 See [releases/tag/v0.1.0](https://github.com/BorisTyshkevich/BentoClick/releases/tag/v0.1.0).
@@ -97,6 +106,7 @@ for the runtime.
 ```
 bentoclick/
 ├── .github/workflows/  # tests.yml, release.yml
+├── scripts/            # install.sh, update.sh, uninstall.sh, lib.sh (shared)
 ├── schema/             # 00-definer.sql, 01-database.sql, 02-roles.sql
 ├── handlers/           # bentoclick.xml (CH HTTP handler config)
 ├── runtime/v1/         # SPA shell + ES-module runtime for spec_version=1

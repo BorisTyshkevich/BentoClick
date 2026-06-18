@@ -1,7 +1,7 @@
-"""Pin install.sh's cluster-file-upload pattern.
+"""Pin scripts/lib.sh's cluster-file-upload pattern.
 
-install.sh's `ch_file_upload` helper deploys SPA assets (spa.js,
-dash.js, …) to every CH replica by:
+The `ch_file_upload` helper in scripts/lib.sh (shared by install.sh and
+update.sh) deploys SPA assets (spa.js, dash.js, …) to every CH replica by:
 
   1. CREATE TABLE _asset_<safe_name> (content String)
        ENGINE = File('RawBLOB', '/var/lib/clickhouse/user_files/<path>')
