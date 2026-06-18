@@ -5,7 +5,7 @@ cluster. The installer is intentionally generic — ACM-specific glue
 (cluster lifecycle, OIDC client provisioning, secret rotation) is the
 caller's responsibility.
 
-## What `install.sh` actually does
+## What `scripts/install.sh` actually does
 
 Steps, in order, all run against the `--ch-host` HTTPS endpoint as
 the `--ch-user` admin:
@@ -29,11 +29,12 @@ the `--ch-user` admin:
    **`dash.js` and `charts.js` are bundles.** Source lives split
    across `runtime/v1/{core,panels,charts}/` for readability, but
    the iframe boot fetches a single `/lib/v1/dash.js` and
-   `/lib/v1/charts.js`. `install.sh` concatenates each tree in
-   topological order at deploy time and uploads the result. The
-   concat order is fixed in `install.sh:bundle_concat` calls; if
-   you add a new file under `core/`, `panels/`, or `charts/`,
-   thread it into the matching invocation. The bundle test at
+   `/lib/v1/charts.js`. The deploy concatenates each tree in
+   topological order and uploads the result. The concat order is
+   fixed in `scripts/lib.sh` (`DASH_BUNDLE` / `CHARTS_BUNDLE`),
+   shared by `install.sh` and `update.sh`; if you add a new file
+   under `core/`, `panels/`, or `charts/`, thread it into the
+   matching array. The bundle test at
    `tests/runtime/unit/module-to-classic.test.js` mirrors the same
    file list and will fail if they drift apart.
 4. **Push `handlers/bentoclick.xml`** to `user_files/dash/bentoclick.xml`
@@ -57,7 +58,7 @@ the `--ch-user` admin:
 
 ## Config.d registration
 
-`install.sh` does not touch cluster config.d — that is the caller's
+`scripts/install.sh` does not touch cluster config.d — that is the caller's
 responsibility. `handlers/bentoclick.xml` must be placed (or
 registered) as a config.d fragment before `/app` will respond.
 
@@ -87,7 +88,7 @@ sed "s|\${MCP_ORIGIN}|$MCP_ORIGIN|g" handlers/bentoclick.xml \
 
 ## Templating
 
-Three placeholders are substituted by `install.sh` at deploy time:
+Three placeholders are substituted by `scripts/install.sh` at deploy time:
 
 | Placeholder | Source | Used in |
 |---|---|---|
@@ -96,7 +97,7 @@ Three placeholders are substituted by `install.sh` at deploy time:
 | `${SPA_ORIGIN}`, `${BRAND_NAME}` | install-time args | `config/client.json.tmpl` |
 
 **If you see a literal `${MCP_ORIGIN}` in the deployed handler XML,
-the substitution was skipped — re-run install.sh.** Browsers parse
+the substitution was skipped — re-run `scripts/install.sh`.** Browsers parse
 the literal as a malformed CSP source and silently drop it, leaving
 `connect-src 'self'`. That only works when MCP and SPA share an
 origin; if they're on different origins, the SPA's RFC 9728
@@ -106,7 +107,7 @@ error in the UI (look for a CSP violation in DevTools).
 ## First-time install
 
 ```bash
-./install.sh \
+./scripts/install.sh \
   --ch-host=https://<host>:<port>        \
   --ch-user=<admin>                      \
   --ch-password=<pw>                     \
@@ -132,14 +133,45 @@ curl -fsS  "$SPA/app" -D - -o /dev/null | grep -i content-security-policy
 # NOT the placeholder ${MCP_ORIGIN}.
 ```
 
-## Re-deploy (update existing cluster)
+## Updating SPA assets only (`scripts/update.sh`)
 
-A re-run upgrades runtime assets, handler XML, and config templates
-in place. **It is safe to re-run with the same args** — every step
-except `--migrate-from` is idempotent.
+The common case — shipping a JS/CSS/HTML change to the SPA — does **not**
+need a full `install.sh` re-run (which would re-apply schema, re-substitute
+the handler CSP, and re-insert samples). `scripts/update.sh` pushes only the
+named SPA assets to `user_files/dash/`, reusing the same bundling +
+`clusterAllReplicas` fan-out as `install.sh` (both share `scripts/lib.sh`).
 
 ```bash
-./install.sh \
+# Push just the dash.js bundle (rebundled from runtime/v1/* on the fly):
+CH_PASSWORD=<pw> ./scripts/update.sh \
+  --ch-host=https://<host>:<port> --ch-user=<admin> dash.js
+
+# Several assets at once:
+CH_PASSWORD=<pw> ./scripts/update.sh \
+  --ch-host=https://<host>:<port> --ch-user=<admin> dash.js charts.js dash-theme.css
+
+# No asset args → push the full SPA set (both bundles + verbatim files).
+CH_PASSWORD=<pw> ./scripts/update.sh \
+  --ch-host=https://<host>:<port> --ch-user=<admin>
+```
+
+Asset names are the served basenames under `/lib/v1/`: `dash.js`, `charts.js`
+(bundled), and `spa.html`, `spa.js`, `spa-helpers.js`, `tweaks.js`,
+`dash-theme.css`, `oauth-callback.html` (verbatim). It does **not** touch
+schema, roles, handlers, config templates, or samples. Pass the password via
+the `CH_PASSWORD` env var rather than `--ch-password` so it never lands on the
+process argv. Asset rotation is non-atomic across replicas — see the window
+note below.
+
+## Full re-deploy (update existing cluster)
+
+A re-run of `install.sh` upgrades runtime assets, handler XML, and config
+templates in place. **It is safe to re-run with the same args** — every step
+except `--migrate-from` is idempotent. Use this when schema, handlers, or
+config also need to change; for an asset-only change prefer `update.sh` above.
+
+```bash
+./scripts/install.sh \
   --ch-host=https://<host>:<port>  \
   --ch-user=<admin>                \
   --ch-password=<pw>               \
@@ -196,10 +228,11 @@ curl -fsSI "$SPA/app" | grep -i content-security-policy | grep -E 'connect-src[^
 
 There is no built-in rollback. Options:
 
-1. **`git checkout <prev-tag> && ./install.sh ...`** — re-runs the
+1. **`git checkout <prev-tag> && ./scripts/install.sh ...`** — re-runs the
    installer with the previous tag's runtime + handlers. User
-   dashboards are untouched.
-2. **`./uninstall.sh ...`** — drops the entire `${DB}` schema +
+   dashboards are untouched. (To roll back assets only, `git checkout`
+   the prior runtime and `./scripts/update.sh … dash.js charts.js`.)
+2. **`./scripts/uninstall.sh ...`** — drops the entire `${DB}` schema +
    user-files assets. Destroys all user-saved dashboards. **Only
    use for a clean-slate redeploy.**
 
@@ -208,7 +241,7 @@ There is no built-in rollback. Options:
 | Symptom | Likely cause | Check |
 |---|---|---|
 | `/app` loads, dashboards show "renderSpec error" | Stale `dash.js` cached by browser | Hard reload. If persists, check `curl $SPA/lib/v1/dash.js` matches `runtime/v1/dash.js` |
-| OAuth login redirects then fails silently | CSP blocking MCP discovery | `curl -I $SPA/app` and look for literal `${MCP_ORIGIN}` in CSP. Re-run install.sh |
+| OAuth login redirects then fails silently | CSP blocking MCP discovery | `curl -I $SPA/app` and look for literal `${MCP_ORIGIN}` in CSP. Re-run `scripts/install.sh` |
 | `/v/<owner>/<slug>` 404 | Handler XML overwritten by another `config.d` fragment | `bentoclick.xml` carries `name=` on every `<rule>` (fix for [GH#70636](https://github.com/ClickHouse/ClickHouse/issues/70636)). If other config.d files in the deployment lack `name=`, their rules can overwrite bentoclick's. Verify: `grep 'name="bentoclick-' /var/lib/clickhouse/preprocessed_configs/config.xml` — all 10 bentoclick rule slugs should appear. |
 | User sees old dashboards listed in `/app` | `/app` index queries `dashboards FINAL WHERE owner = currentUser()` — they're saved as a different OAuth identity | Check `currentUser()` in CH for that bearer matches the row's `owner` |
 | Sample dashboards missing | Samples are owned by the installer admin, not the viewer | Log in as admin to see them, or copy spec into user's account via the `save_dashboard` MCP tool |

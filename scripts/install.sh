@@ -76,31 +76,19 @@ CH_PASSWORD="${CH_PASSWORD:-}"
 # blocked when MCP and SPA are on different origins.
 MCP_ORIGIN="$(printf '%s' "$MCP_URL" | sed -E 's|^(https?://[^/]+).*|\1|')"
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$HERE"
+# Resolve the repo root (this script lives in scripts/) so the relative
+# paths below — schema/, runtime/v1/, handlers/, config/, samples/ —
+# resolve regardless of the caller's cwd.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$ROOT"
 
-# ---- ClickHouse helpers ----
-# Password is written to a per-run .netrc tempfile rather than passed
-# via --user, which would appear in `ps` for the duration of each curl.
-HOST_FOR_NETRC="$(printf '%s' "$CH_HOST" | sed -e 's|^https*://||' -e 's|[:/].*$||')"
-NETRC_FILE="$(mktemp)"
-chmod 600 "$NETRC_FILE"
-printf 'machine %s\n  login %s\n  password %s\n' \
-  "$HOST_FOR_NETRC" "$CH_USER" "$CH_PASSWORD" > "$NETRC_FILE"
-tmp_charts='' tmp_dash=''
-trap 'rm -f "$NETRC_FILE" "${tmp_charts}" "${tmp_dash}"' EXIT
-
-ch_curl() {
-  curl -fsS --netrc-file "$NETRC_FILE" "$@"
-}
-
-ch_query() {
-  # stdin = SQL; runs as the admin user.
-  # Antalya CH 26.1 doesn't accept the `multi_statements` setting,
-  # and the HTTP path requires one statement per request anyway.
-  # Callers that need multi-statement files must split first.
-  ch_curl --data-binary @- "${CH_HOST}/"
-}
+# ClickHouse auth/query (setup_netrc, ch_curl, ch_query), the cluster
+# asset uploader (ch_file_upload), and the JS bundler + canonical bundle
+# lists (bundle_concat, DASH_BUNDLE, CHARTS_BUNDLE, VERBATIM_ASSETS,
+# push_asset) are shared with update.sh — see scripts/lib.sh.
+source "$SCRIPT_DIR/lib.sh"
+setup_netrc "$CH_HOST" "$CH_USER" "$CH_PASSWORD"
 
 # Apply a SQL file by splitting it on bare `;` lines and sending each
 # statement separately. Sufficient for our schema files; not a full
@@ -149,48 +137,6 @@ for i, stmt in enumerate(stmts):
 PY
 }
 
-ch_file_upload() {
-  # $1 = relative path inside user_files (e.g. dash/spa.js)
-  # $2 = local file
-  #
-  # Cluster-distribution model: one File-engine table per asset,
-  # created ON CLUSTER so every replica has its own table pointing
-  # at the SAME absolute path on its OWN local user_files/ disk.
-  # `INSERT INTO FUNCTION clusterAllReplicas(...)` then fans the
-  # bytes out to every replica's local file().
-  #
-  # Why not `INSERT INTO FUNCTION clusterAllReplicas('{cluster}', file(...))`?
-  # CH rejects table functions inside clusterAllReplicas — it expects
-  # a db.table reference (Code: 60. UNKNOWN_TABLE: Both table name
-  # and UUID are empty). Same goes for cluster() and remote(). The
-  # File-engine table is the indirection that makes the fan-out work.
-  #
-  # Each replica is a separate write; there is no quorum or atomic
-  # rotation. During the brief inconsistency window an unlucky reader
-  # behind a non-sticky LB might fetch stale bytes from one replica
-  # while another has the new bytes. Acceptable for SPA assets — the
-  # browser cache headers (no-store on spa.js, no-cache on dash.js
-  # via spa.js fetchRuntime) re-fetch on next page load.
-  local path="$1" local_file="$2"
-  # Asset path → CH-safe table name: 'dash/spa.js' → '_asset_dash_spa_js'.
-  local table_name
-  table_name="_asset_$(printf '%s' "$path" | tr -c 'A-Za-z0-9_' '_')"
-  local b64
-  b64="$(base64 < "$local_file" | tr -d '\n')"
-  # 1. Idempotent CREATE on every replica. File engine accepts an
-  #    absolute path under user_files (CH 26+ resolves it relative
-  #    to user_files_path when it's a subdir).
-  printf "CREATE TABLE IF NOT EXISTS %s.%s ON CLUSTER '%s' (content String) ENGINE = File('RawBLOB', '/var/lib/clickhouse/user_files/%s')" \
-    "$DB" "$table_name" "$CLUSTER" "$path" \
-    | ch_query > /dev/null
-  # 2. clusterAllReplicas INSERT — bytes fanned out to every replica's
-  #    local File-engine table, truncate-on-insert so re-deploys
-  #    overwrite cleanly.
-  printf "INSERT INTO FUNCTION clusterAllReplicas('%s', '%s', '%s') SETTINGS engine_file_truncate_on_insert = 1 SELECT base64Decode('%s')" \
-    "$CLUSTER" "$DB" "$table_name" "$b64" \
-    | ch_query > /dev/null
-}
-
 echo "==> bentoclick install"
 echo "    CH:           $CH_HOST"
 echo "    DB:           $DB"
@@ -231,63 +177,11 @@ fi
 # (`const`, `class`) must appear before any reference. Functions
 # are hoisted, so they can be in any order within their file.
 
-bundle_concat() {
-  # $1 = output tempfile, $2..$N = source files in topological order.
-  local out="$1"; shift
-  : > "$out"
-  for src in "$@"; do
-    if [[ ! -f "$src" ]]; then
-      echo "ERROR: bundle source missing: $src" >&2
-      return 1
-    fi
-    printf '\n// ==== bundle: %s ====\n' "$src" >> "$out"
-    cat "$src" >> "$out"
-  done
-}
-
-echo "==> bundling runtime/v1/charts.js"
-tmp_charts="$(mktemp)"
-bundle_concat "$tmp_charts" \
-  runtime/v1/charts/palette.js \
-  runtime/v1/charts/scales.js \
-  runtime/v1/charts/svg.js \
-  runtime/v1/charts.js
-
-echo "==> bundling runtime/v1/dash.js"
-tmp_dash="$(mktemp)"
-bundle_concat "$tmp_dash" \
-  runtime/v1/core/fmt.js \
-  runtime/v1/core/interpolate.js \
-  runtime/v1/core/run-state.js \
-  runtime/v1/core/markdown.js \
-  runtime/v1/core/ledger.js \
-  runtime/v1/core/badge.js \
-  runtime/v1/core/csv.js \
-  runtime/v1/panels/_shared.js \
-  runtime/v1/panels/chart-helpers.js \
-  runtime/v1/panels/kpi-strip.js \
-  runtime/v1/panels/table.js \
-  runtime/v1/panels/bars.js \
-  runtime/v1/panels/markdown.js \
-  runtime/v1/panels/hero.js \
-  runtime/v1/panels/callouts.js \
-  runtime/v1/panels/html.js \
-  runtime/v1/panels/script.js \
-  runtime/v1/panels/line.js \
-  runtime/v1/panels/combo.js \
-  runtime/v1/panels/chart.js \
-  runtime/v1/panels/dataset.js \
-  runtime/v1/dash.js
-
-echo "==> pushing runtime/v1/* to user_files"
-ch_file_upload "dash/charts.js" "$tmp_charts"
-ch_file_upload "dash/dash.js"   "$tmp_dash"
-
-# Other runtime files upload verbatim (no bundling needed).
-for f in runtime/v1/spa.html runtime/v1/spa.js runtime/v1/spa-helpers.js \
-         runtime/v1/tweaks.js runtime/v1/dash-theme.css runtime/v1/oauth-callback.html; do
-  base="$(basename "$f")"
-  ch_file_upload "dash/${base}" "$f"
+echo "==> bundling + pushing runtime/v1/* to user_files"
+push_asset charts.js   # bundled from CHARTS_BUNDLE
+push_asset dash.js     # bundled from DASH_BUNDLE
+for a in "${VERBATIM_ASSETS[@]}"; do
+  push_asset "$a"
 done
 
 # ---- 3. Push HTTP handlers ----

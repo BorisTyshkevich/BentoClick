@@ -17,7 +17,7 @@
 -- because it never logs in interactively — CH only references it by
 -- name from the MV's DEFINER clause.
 --
--- Filename starts with `00-` so install.sh's sorted apply order
+-- Filename starts with `00-` so scripts/install.sh's sorted apply order
 -- creates this user BEFORE 01-database.sql's MV references it. The
 -- definer's grants on `${DB}.dashboards_raw` and `${DB}.dashboards`
 -- live at the END of 01-database.sql so they apply once those
