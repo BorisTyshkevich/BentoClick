@@ -163,6 +163,19 @@ the `CH_PASSWORD` env var rather than `--ch-password` so it never lands on the
 process argv. Asset rotation is non-atomic across replicas — see the window
 note below.
 
+**kubectl-only clusters (`--exec`).** When admin access is via `kubectl exec`
+(a `clickhouse-client` wrapper) rather than a reachable admin HTTPS endpoint,
+pass `--exec=<wrapper>` instead of `--ch-host`/`--ch-user`. The upload SQL is
+piped to `<wrapper> --multiquery`; the wrapper owns auth, so no `CH_PASSWORD`
+is needed. Example (the Altinity demo `cl` wrapper, which `kubectl exec`s into
+the CHI pod):
+
+```bash
+./scripts/update.sh --exec='cl otel' dash.js
+```
+
+The `clusterAllReplicas` fan-out still pushes to every replica.
+
 ## Full re-deploy (update existing cluster)
 
 A re-run of `install.sh` upgrades runtime assets, handler XML, and config

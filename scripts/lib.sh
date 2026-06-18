@@ -10,6 +10,13 @@
 #     ch_query / ch_file_upload / push_asset.
 
 # ---- ClickHouse auth + query --------------------------------------------
+# Transport: by default ch_query POSTs to the ClickHouse HTTP endpoint as the
+# admin user (curl + .netrc). For clusters with no reachable admin HTTP endpoint
+# (e.g. kubectl-only access), set CH_EXEC_CMD to a clickhouse-client wrapper
+# such as `cl otel`; ch_query then pipes the SQL to it instead. update.sh wires
+# this from its --exec flag.
+CH_EXEC_CMD=()
+
 # Password is written to a per-run .netrc tempfile (chmod 600) rather than
 # passed via --user, which would appear in `ps` for the duration of each
 # curl. The tempfile is removed on EXIT.
@@ -29,10 +36,15 @@ ch_curl() {
 }
 
 ch_query() {
-  # stdin = SQL; runs as the admin user. The HTTP path requires one
-  # statement per request, so callers that need multi-statement files
-  # must split first (see install.sh's ch_apply_file).
-  ch_curl --data-binary @- "${CH_HOST}/"
+  # stdin = SQL; runs as the admin user. Over HTTP the endpoint requires
+  # one statement per request, so callers that need multi-statement files
+  # must split first (see install.sh's ch_apply_file). Over an exec wrapper
+  # (--multiquery) one statement per call is still how callers invoke it.
+  if [[ ${#CH_EXEC_CMD[@]} -gt 0 ]]; then
+    "${CH_EXEC_CMD[@]}" --multiquery
+  else
+    ch_curl --data-binary @- "${CH_HOST}/"
+  fi
 }
 
 # ---- asset upload (cluster fan-out) -------------------------------------
