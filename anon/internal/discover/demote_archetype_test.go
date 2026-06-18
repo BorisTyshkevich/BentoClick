@@ -202,11 +202,11 @@ func TestVerifyCrossClusterTrustedPresent(t *testing.T) {
 
 func TestWriteMaskingPlanWithAttrMap(t *testing.T) {
 	src := &fakeExec{rows: map[string]*chclient.Rows{
-		// attrKeyRoles scan
-		"uniqExact(v)": {
+		// attrKeyRoles scan — cols: k, uniq(v) card, numfrac, piifrac
+		"uniq(v)": {
 			Data: [][]*string{
-				{s("http.method"), s("4"), s("0")},   // semconv → vocabulary
-				{s("my.custom"), s("200"), s("0")},    // custom → field token
+				{s("http.method"), s("4"), s("0"), s("0")}, // semconv → vocabulary
+				{s("my.custom"), s("200"), s("0"), s("0")}, // custom → field token
 			},
 		},
 	}}
@@ -251,9 +251,9 @@ func TestWriteMaskingPlanWithAttrMap(t *testing.T) {
 func TestWriteMaskingPlanWithKeepAttrKeys(t *testing.T) {
 	// KeepAttrKeys adds extra vocab keys to the spec
 	src := &fakeExec{rows: map[string]*chclient.Rows{
-		"uniqExact(v)": {
+		"uniq(v)": {
 			Data: [][]*string{
-				{s("http.method"), s("4"), s("0")},
+				{s("http.method"), s("4"), s("0"), s("0")},
 			},
 		},
 	}}

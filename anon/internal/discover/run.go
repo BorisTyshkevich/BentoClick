@@ -52,6 +52,10 @@ type Config struct {
 	// AttrCardThreshold is the value-cardinality ceiling for an attrmap key to be
 	// auto-classified as vocabulary (value kept real). 0 → default (64).
 	AttrCardThreshold uint64
+	// AttrPIIValueThreshold is the fraction of an attrmap key's values that must
+	// look like PII (classify.PIIValueSQL) to force the key to identity (masked)
+	// regardless of name/cardinality. 0 → default (0.5).
+	AttrPIIValueThreshold float64
 	// PIIKeyPattern, if set, is an extra case-insensitive regex OR-ed with the
 	// built-in PII denylist to force more attrmap keys to identity (masked).
 	PIIKeyPattern string
@@ -140,24 +144,29 @@ func (a AttrKeyInfo) outKey() string {
 	return a.Key
 }
 
-// attrParams returns the attr-key classification threshold + compiled PII deny
-// regexp (operator pattern OR-ed onto the default), shared by observe + masking.
-func (r *Run) attrParams() (uint64, *regexp.Regexp, error) {
-	threshold := r.Cfg.AttrCardThreshold
+// attrParams returns the attr-key classification knobs — cardinality threshold,
+// value-PII fraction threshold, and the compiled PII-name deny regexp (operator
+// pattern OR-ed onto the default) — shared by observe + masking.
+func (r *Run) attrParams() (threshold uint64, piiThreshold float64, denyRe *regexp.Regexp, err error) {
+	threshold = r.Cfg.AttrCardThreshold
 	if threshold == 0 {
 		threshold = 64
+	}
+	piiThreshold = r.Cfg.AttrPIIValueThreshold
+	if piiThreshold == 0 {
+		piiThreshold = 0.5
 	}
 	pat := classify.DefaultPIIKeyPattern
 	if r.Cfg.PIIKeyPattern != "" {
 		pat = "(" + pat + ")|(" + r.Cfg.PIIKeyPattern + ")"
 	}
-	re, err := regexp.Compile(pat)
-	return threshold, re, err
+	denyRe, err = regexp.Compile(pat)
+	return threshold, piiThreshold, denyRe, err
 }
 
 // attrRolesFor returns the (memoized) per-key roles for one attrmap column, so
 // the observe wave and the masking plan agree on exactly which custom keys exist.
-func (r *Run) attrRolesFor(ctx context.Context, db, table, col string) ([]AttrKeyInfo, error) {
+func (r *Run) attrRolesFor(ctx context.Context, db, table, col, timeCol string) ([]AttrKeyInfo, error) {
 	if r.attrCache == nil {
 		r.attrCache = map[string][]AttrKeyInfo{}
 	}
@@ -165,11 +174,11 @@ func (r *Run) attrRolesFor(ctx context.Context, db, table, col string) ([]AttrKe
 	if v, ok := r.attrCache[k]; ok {
 		return v, nil
 	}
-	threshold, denyRe, err := r.attrParams()
+	threshold, piiThreshold, denyRe, err := r.attrParams()
 	if err != nil {
 		return nil, err
 	}
-	infos, err := r.attrKeyRoles(ctx, db, table, col, threshold, denyRe)
+	infos, err := r.attrKeyRoles(ctx, db, table, col, timeCol, threshold, piiThreshold, denyRe)
 	if err != nil {
 		return nil, err
 	}
@@ -178,22 +187,31 @@ func (r *Run) attrRolesFor(ctx context.Context, db, table, col string) ([]AttrKe
 }
 
 // attrKeyRoles scans one attrmap column's keys on the SOURCE and classifies each
-// by (PII denylist, numeric fraction, value-cardinality). The scan is bounded to
-// a row sample so it stays cheap on large fact tables.
-func (r *Run) attrKeyRoles(ctx context.Context, db, table, col string, threshold uint64, denyRe *regexp.Regexp) ([]AttrKeyInfo, error) {
+// by (PII name denylist, value-PII fraction, numeric fraction, value-cardinality).
+// Cardinality is uniq(v) (HyperLogLog — global, cheap) over the same window the
+// sandbox uses when the table has a time column (else the full table), so the
+// estimate reflects the data actually sandboxed rather than a recency-biased
+// first-N prefix.
+func (r *Run) attrKeyRoles(ctx context.Context, db, table, col, timeCol string, threshold uint64, piiThreshold float64, denyRe *regexp.Regexp) ([]AttrKeyInfo, error) {
 	sqlNumeric := strings.ReplaceAll(classify.MeasureValueSQL, `\`, `\\`)
+	sqlPII := strings.ReplaceAll(classify.PIIValueSQL, `\`, `\\`)
+	where := ""
+	if timeCol != "" {
+		where = fmt.Sprintf(" WHERE %s >= now() - INTERVAL %d DAY", qident(timeCol), r.Cfg.WindowDays)
+	}
 	q := fmt.Sprintf(
-		"SELECT k, uniqExact(v) AS card, avg(toUInt8(match(v, '%s'))) AS numfrac "+
-			"FROM (SELECT mapKeys(%s) AS ks, mapValues(%s) AS vs FROM %s.%s LIMIT 200000) "+
+		"SELECT k, uniq(v) AS card, avg(toUInt8(match(v, '%s'))) AS numfrac, "+
+			"avg(toUInt8(match(v, '%s'))) AS piifrac "+
+			"FROM (SELECT mapKeys(%s) AS ks, mapValues(%s) AS vs FROM %s.%s%s) "+
 			"ARRAY JOIN ks AS k, vs AS v GROUP BY k",
-		sqlNumeric, qident(col), qident(col), qident(db), qident(table))
+		sqlNumeric, sqlPII, qident(col), qident(col), qident(db), qident(table), where)
 	rows, err := r.SrcEx.Query(ctx, q)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]AttrKeyInfo, 0, len(rows.Data))
 	for _, row := range rows.Data {
-		if len(row) < 3 || row[0] == nil {
+		if len(row) < 4 || row[0] == nil {
 			continue
 		}
 		var card uint64
@@ -204,7 +222,11 @@ func (r *Run) attrKeyRoles(ctx context.Context, db, table, col string, threshold
 		if row[2] != nil {
 			nf, _ = strconv.ParseFloat(*row[2], 64)
 		}
-		role := classify.ClassifyAttrKey(*row[0], card, nf, threshold, denyRe)
+		var pf float64
+		if row[3] != nil {
+			pf, _ = strconv.ParseFloat(*row[3], 64)
+		}
+		role := classify.ClassifyAttrKey(*row[0], card, nf, pf, threshold, piiThreshold, denyRe)
 		out = append(out, AttrKeyInfo{
 			DB: db, Table: table, Column: col, Key: *row[0],
 			Role: string(role), Cardinality: card,
@@ -401,7 +423,7 @@ func (r *Run) observe(ctx context.Context) error {
 			// mints them post-Build and the IdMap is fail-closed. The scan is
 			// cached so the masking plan sees the identical key set.
 			if classify.Classify(c) == classify.ClassAttrMap {
-				infos, err := r.attrRolesFor(ctx, t.Database, t.Name, c.Name)
+				infos, err := r.attrRolesFor(ctx, t.Database, t.Name, c.Name, tableTimeCol(t))
 				if err != nil {
 					r.Notes = append(r.Notes, fmt.Sprintf("attr-key scan failed for %s.%s.%s: %s", t.Database, t.Name, c.Name, firstLine(err.Error())))
 					continue

@@ -78,7 +78,7 @@ func (r *Run) writeMaskingPlan(ctx context.Context) ([]*tablePlan, error) {
 			var spec *classify.AttrMaskSpec
 			if class == classify.ClassAttrMap {
 				ms := classify.AttrMaskSpec{}
-				infos, qerr := r.attrRolesFor(ctx, t.Database, t.Name, c.Name)
+				infos, qerr := r.attrRolesFor(ctx, t.Database, t.Name, c.Name, tableTimeCol(t))
 				if qerr != nil {
 					r.Notes = append(r.Notes, fmt.Sprintf("attr-key roles failed for %s.%s.%s: %s (masking all non-override values)", t.Database, t.Name, c.Name, firstLine(qerr.Error())))
 				} else {
@@ -160,6 +160,18 @@ func timeFilterCol(p *tablePlan) string {
 	for _, cp := range p.Cols {
 		if cp.Class == classify.ClassTime && (cp.Col.InPart || cp.Col.InSK) {
 			return cp.Col.Name
+		}
+	}
+	return ""
+}
+
+// tableTimeCol is the raw-Table analog of timeFilterCol: the partition/sorting-key
+// time column to window the attr-key cardinality scan to (same window the sandbox
+// uses), or "" if none. Usable before the masking plan exists.
+func tableTimeCol(t *Table) string {
+	for _, c := range t.Columns {
+		if classify.Classify(c) == classify.ClassTime && (c.InPart || c.InSK) {
+			return c.Name
 		}
 	}
 	return ""
