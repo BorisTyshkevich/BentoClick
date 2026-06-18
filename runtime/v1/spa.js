@@ -38,7 +38,7 @@ var CID_KEY   = 'mcp_cid_v3';
 var CLIENT_KEY = 'mcp_oauth_client_id';
 var OLD_AS_KEY = 'mcp_as_meta';
 var AS_KEY    = 'mcp_as_meta_v2';
-// BASE — URL path prefix this SPA is mounted under (otel install serves it
+// BASE — URL path prefix this SPA is mounted under (the install serves it
 // under /b/ to coexist with the legacy /v/ dashboard prototype). All absolute
 // SPA paths (routes, assets, config, OAuth) are built relative to BASE.
 var BASE      = '/b';

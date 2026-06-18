@@ -9,7 +9,7 @@
 -- bentoclick-only rows into bentosecrets, reloads the dict, then drops the
 -- bentoclick copies.
 --
--- Apply AS ADMIN on the SOURCE cluster (otel). Idempotent: tokens are
+-- Apply AS ADMIN on the source cluster. Idempotent: tokens are
 -- HMAC-deterministic, so re-inserts dedup by token in the dict's GROUP BY.
 -- ORDER MATTERS: verify de-tok (step 3) BEFORE the DROP (step 4).
 -- The meta tables are plain (non-replicated) ReplacingMergeTree, hence no
@@ -23,7 +23,7 @@ INSERT INTO bentosecrets.masking_plan   SELECT * FROM bentoclick.masking_plan;
 SYSTEM RELOAD DICTIONARY bentosecrets.token_to_real;
 
 -- 3. >>> VERIFY before proceeding <<< bentoclick.dashboards FINAL must show 0
---    residual tbl_/col_/field_/_anon tokens (CL=cl otel verify.sh, all pass).
+--    residual tbl_/col_/field_/_anon tokens (CL="cl <cluster>" verify.sh, all pass).
 
 -- 4. Drop the redundant secret copies from the dashboards DB (closes M1).
 DROP TABLE IF EXISTS bentoclick.identifier_map;

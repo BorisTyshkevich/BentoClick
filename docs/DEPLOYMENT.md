@@ -171,7 +171,7 @@ is needed. Example (the Altinity demo `cl` wrapper, which `kubectl exec`s into
 the CHI pod):
 
 ```bash
-./scripts/update.sh --exec='cl otel' dash.js
+./scripts/update.sh --exec='cl <cluster>' dash.js
 ```
 
 The `clusterAllReplicas` fan-out still pushes to every replica.

@@ -60,7 +60,7 @@ func assertTagged(t *testing.T, args []string) {
 }
 
 func TestConstructors(t *testing.T) {
-	if got := NewFromString("cl  otel").Prefix; len(got) != 2 || got[0] != "cl" || got[1] != "otel" {
+	if got := NewFromString("cl  mycluster").Prefix; len(got) != 2 || got[0] != "cl" || got[1] != "mycluster" {
 		t.Errorf("NewFromString: %v", got)
 	}
 	want := []string{"clickhouse-client", "--connection", "demo"}

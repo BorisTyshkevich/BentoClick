@@ -1,7 +1,7 @@
 // Package chclient talks to ClickHouse by shelling out to an arbitrary
 // command prefix that accepts clickhouse-client flags — either the binary
 // itself (`clickhouse-client --connection demo`) or a wrapper that forwards
-// flags to a remote cluster (`cl otel`, a kubectl-exec shim). Credentials
+// flags to a remote cluster (`cl <cluster>`, a kubectl-exec shim). Credentials
 // stay in the prefix command's own config; the password never appears on
 // argv. The Executor interface is kept narrow so a native driver
 // (clickhouse-go) can replace it at MCP-integration time.
@@ -66,7 +66,7 @@ type Executor interface {
 // Client executes through an argv prefix (binary + fixed flags).
 type Client struct {
 	// Prefix is the command and any fixed arguments, e.g.
-	// ["clickhouse-client", "--connection", "demo"] or ["cl", "otel"].
+	// ["clickhouse-client", "--connection", "demo"] or ["cl", "<cluster>"].
 	// Per-call flags (--query, --format, --log_comment) are appended.
 	Prefix []string
 
@@ -80,7 +80,7 @@ func New(prefix []string) *Client {
 	return &Client{Prefix: prefix}
 }
 
-// NewFromString whitespace-splits a command line, e.g. "cl otel" or
+// NewFromString whitespace-splits a command line, e.g. "cl <cluster>" or
 // "clickhouse-client --connection demo". Fields-splitting (no shell quoting)
 // is deliberate: prefixes are operator-supplied flag vectors, not shell
 // scripts, and avoiding a shell keeps SQL out of quoting trouble.

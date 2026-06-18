@@ -472,8 +472,8 @@ is the only thing LLM users ever touch.
 Decisions:
 
 1. **Single-DB mirror semantics.** The database is the CLI's primary object:
-   `anond run --source "cl otel" --source-db claude_otel --dest
-   "clickhouse-client --connection demo" --dest-db claude_otel`. The
+   `anond run --source "cl <cluster>" --source-db mydb --dest
+   "clickhouse-client --connection demo" --dest-db mydb`. The
    multi-DB `--databases` scope is gone; one run mirrors exactly one
    database into one operator-named sandbox database on the dest (no more
    per-token `db_<tok>` databases). Tables/columns inside stay token-named.

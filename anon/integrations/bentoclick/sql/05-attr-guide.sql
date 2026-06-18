@@ -1,6 +1,6 @@
 -- altinity.attr_guide — backs the describe_attributes MCP tool.
 -- Per attribute KEY of every Map column: its role + a usage hint, latest run.
--- Apply: cl otel --multiquery < attr_guide.sql
+-- Apply: cl <cluster> --multiquery < attr_guide.sql
 CREATE OR REPLACE VIEW altinity.attr_guide AS
 SELECT
     table_token,

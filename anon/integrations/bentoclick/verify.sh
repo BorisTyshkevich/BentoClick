@@ -5,14 +5,14 @@
 # must return 0; the script exits non-zero if any fails. Run after a sandbox build
 # / RBAC change. Read-only.
 #
-#   CL="cl otel" ANON_ROLE=anon_mcp_reader VIEWER_ROLE=bentoclick_viewer_role \
+#   CL="cl <cluster>" ANON_ROLE=anon_mcp_reader VIEWER_ROLE=bentoclick_viewer_role \
 #   SECRET_DB=bentosecrets ./verify.sh [anon_database ...]
 #
 # Layer note: these probe DEPLOYMENT objects/roles (bentoclick.*, bentosecrets.*,
 # anon_mcp_reader, …) — they are NOT in anond's generic `verify` (which checks the
 # model-agnostic no-survivor / sandbox-DDL / trusted-split invariants).
 set -uo pipefail
-CL="${CL:-cl otel}"
+CL="${CL:-cl <cluster>}"
 ANON_ROLE="${ANON_ROLE:-anon_mcp_reader}"
 # Human viewer role: stock bentoclick installs use bentoclick_viewer_role; the
 # integration's 00-anon-rbac.sql instead provisions ${DB}_anon_viewer_role —
@@ -20,7 +20,7 @@ ANON_ROLE="${ANON_ROLE:-anon_mcp_reader}"
 VIEWER_ROLE="${VIEWER_ROLE:-bentoclick_viewer_role}"
 SECRET_DB="${SECRET_DB:-bentosecrets}"
 REG_DB="${REG_DB:-bentoclick}"
-DATA_DBS="${DATA_DBS:-claude_otel}"   # real (non-anon) data DBs the anon role must not reach
+DATA_DBS="${DATA_DBS:-mydb}"   # real (non-anon) data DBs the anon role must not reach
 fail=0
 ck() { # ck "label" "query-returning-0-for-pass"
   local got; got="$($CL --query "$2" 2>&1)"

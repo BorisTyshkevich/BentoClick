@@ -24,11 +24,11 @@ which relocates ownership-stamping into the MCP).
 
 The HTTP external authenticator returns **settings only, no roles** — and
 settings can't express "may write `dashboards_raw`, may not read
-`claude_otel`" (`readonly` blocks the dashboard write too; there's no
+`mydb`" (`readonly` blocks the dashboard write too; there's no
 per-database allow setting). So A is impossible on the community
 `ch-jwt-verify` path.
 
-The Antalya build (otel runs 26.1 Antalya) instead uses native
+The Antalya build (the demo cluster runs 26.1 Antalya) instead uses native
 `token_processors` + `user_directories`, which map OAuth tokens to ClickHouse
 roles in-server. That is the mechanism A needs.
 
@@ -48,7 +48,7 @@ data-scoped token.
 ### Two ClickHouse implementation variants
 
 **Variant A1 — audience-routed processors (fits today's config shape).**
-The otel `user_directories/token` currently assigns a fixed `<common_roles>`
+The demo cluster's `user_directories/token` currently assigns a fixed `<common_roles>`
 to every token user. Define **two** token_processors keyed on `audience`,
 each with its own `common_roles`:
 
@@ -170,10 +170,10 @@ logs in"). Ceiling it with the client grant; surface it via consent.
    can require `act` *absent* before adding data roles, binding the reduction
    to "a deputy is acting," not just a client id.
 
-## Broker topology caveat (otel runs `broker: true`)
+## Broker topology caveat (the broker deployment runs `broker: true`)
 
 The crisp "two Auth0 apps, two consent screens" model is literal only if the
-LLM connector talks to Auth0 **directly**. In otel's broker mode, altinity-mcp
+LLM connector talks to Auth0 **directly**. In the broker deployment's broker mode, altinity-mcp
 is the OAuth AS to the MCP clients (ChatGPT/Claude via CIMD) and brokers Auth0
 upstream — so the LLM path's *Auth0-facing* client is **altinity-mcp's upstream
 client**, not a per-connector Auth0 app. Consequences:
@@ -226,7 +226,7 @@ deployments.
    `acm/mcp` (the deployment source of truth).
 2. Does CH select the `token_processor` by the token's **`aud`** (variant A1),
    and reject a token whose audience matches no processor?
-3. How is otel's current `user_directories/token/common_roles` wired today,
+3. How is the source cluster's current `user_directories/token/common_roles` wired today,
    and what static grants (if any) do JWT-provisioned users carry — i.e. how
    far is the deployment from the zero-static-grants invariant?
 4. Is RFC 8693 token exchange (the `act` claim) available on the Auth0 tier in
@@ -241,7 +241,7 @@ deployments.
 ## References
 
 - altinity-mcp `docs/oauth_authorization.md` — `token_processors` /
-  `user_directories` config (the otel Bearer-auth path).
+  `user_directories` config (the source cluster's Bearer-auth path).
 - [ClickHouse JWT auth (#17270)](https://github.com/ClickHouse/ClickHouse/issues/17270),
   [JWT in clickhouse-client (#62829)](https://github.com/ClickHouse/ClickHouse/pull/62829).
 - [Auth0: roles/permissions via Actions](https://support.auth0.com/center/s/article/add-roles-and-permissions-to-the-id-token-using-actions),

@@ -58,7 +58,7 @@ jobs:
   # detok-bijection invariants — the security guarantees that previously ran
   # ONLY in t.Skip()'d tests (H5). No Docker: franchb/embedded-clickhouse runs
   # ClickHouse as a host subprocess (TestMain), using the clickhouse binary
-  # installed below. The cross-cluster cases need the `cl otel` wrapper and stay
+  # installed below. The cross-cluster cases need the `cl <cluster>` wrapper and stay
   # local-only.
   go-integration:
     name: go integration (no-leak / trusted-split, embedded ClickHouse)

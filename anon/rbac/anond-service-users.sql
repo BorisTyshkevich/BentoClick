@@ -5,11 +5,11 @@
 --
 -- Params: ${META_DB} (bentoclick — anond meta + LLM-facing registry),
 -- ${SECRET_DB} (bentosecrets — de-anon secret: identifier_map, masking_plan,
--- token_to_real dict), ${DATA_DB} (claude_otel — source only), ${CLUSTER},
+-- token_to_real dict), ${DATA_DB} (mydb — source only), ${CLUSTER},
 -- ${ANOND_PW}.
 
 -- ====================================================================
--- SOURCE cluster (otel): reads system.* + real data, writes the de-anon
+-- SOURCE cluster: reads system.* + real data, writes the de-anon
 -- secret (identifier_map, masking_plan) to ${SECRET_DB} and the tokens-only
 -- profile meta to ${META_DB}. NO real-data writes, NOT admin.
 -- Pre-create ${META_DB} and ${SECRET_DB} as admin once, so anond needs no

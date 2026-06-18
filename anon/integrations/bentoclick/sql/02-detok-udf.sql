@@ -2,8 +2,8 @@
 -- against real data: (1) expand every anond token to its real identifier via
 -- the token_to_real dictionary, then (2) map the sandbox database qualifier
 -- `<real>_anon.` back to `<real>.`. Tables/columns are tokens (step 1), but the
--- sandbox DB name is disclosed verbatim (`claude_otel_anon`, not a token), so
--- the LLM authors `FROM claude_otel_anon.<tbl_token>` and step 2 resolves the DB.
+-- sandbox DB name is disclosed verbatim (`mydb_anon`, not a token), so
+-- the LLM authors `FROM mydb_anon.<tbl_token>` and step 2 resolves the DB.
 --
 -- This is word-substitution, not SQL parsing: anond tokens occupy a
 -- reserved lexical namespace (`<kind>_<hex>`), and a run aborts if any real

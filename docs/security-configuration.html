@@ -319,7 +319,7 @@
   <div class="intro-box">
     <strong>Important context: tokenized masked sandboxing is not full anonymization.</strong>
     bentoclick's LLM-authoring flow operates against a masked sandbox database
-    (<code>&lt;db&gt;_anon</code>, e.g. <code>claude_otel_anon</code>) where real identifiers are replaced
+    (<code>&lt;db&gt;_anon</code>, e.g. <code>mydb_anon</code>) where real identifiers are replaced
     with stable tokens. A de-tokenization step at view time rewrites panel SQL back to real tables
     and swaps tokens for real values — but only for human viewers. This architecture meaningfully
     limits what an LLM can see during authoring, <strong>but it does not eliminate all
@@ -444,9 +444,9 @@ LLM session identity<br>
     <p><strong>Step 3 — Narrow SELECT grants to exactly the databases dashboards need.</strong></p>
     <pre><code><span class="comment">-- NEVER grant SELECT ON *.* to the viewer role.</span>
 <span class="comment">-- Enumerate only the real databases that dashboards query.</span>
-<span class="comment">-- Replace claude_otel with your actual database names.</span>
+<span class="comment">-- Replace mydb with your actual database names.</span>
 
-<span class="keyword">GRANT</span> SELECT <span class="keyword">ON</span> claude_otel.* <span class="keyword">TO</span> bentoclick_viewer_role;
+<span class="keyword">GRANT</span> SELECT <span class="keyword">ON</span> mydb.* <span class="keyword">TO</span> bentoclick_viewer_role;
 <span class="keyword">GRANT</span> SELECT <span class="keyword">ON</span> system.metrics,
               system.asynchronous_metrics,
               system.events,
@@ -509,7 +509,7 @@ LLM session identity<br>
 <span class="comment">-- Expected: DB::Exception: ... not enough privileges ... (ACCESS_DENIED)</span>
 
 <span class="comment">-- 5. Normal dashboard query must succeed.</span>
-<span class="keyword">SELECT</span> count() <span class="keyword">FROM</span> claude_otel.otel_traces <span class="keyword">LIMIT</span> 1;
+<span class="keyword">SELECT</span> count() <span class="keyword">FROM</span> mydb.otel_traces <span class="keyword">LIMIT</span> 1;
 <span class="comment">-- Expected: returns a number.</span></code></pre>
   </div>
 
@@ -535,7 +535,7 @@ LLM session identity<br>
     </p>
     <p>
       The concern: if that same email address also holds real-data grants (e.g. a direct
-      <code>SELECT ON claude_otel.*</code> for their own BI use), those grants exist on the user
+      <code>SELECT ON mydb.*</code> for their own BI use), those grants exist on the user
       object even though they are not currently active in the LLM session. Isolation therefore
       depends on:
     </p>
@@ -584,7 +584,7 @@ LLM session identity<br>
 <span class="comment">-- Explicitly ensure no real-data access (belt-and-suspenders).</span>
 <span class="comment">-- These should be no-ops if the user was freshly created, but are</span>
 <span class="comment">-- worth stating explicitly for auditability.</span>
-<span class="keyword">REVOKE</span> ALL <span class="keyword">ON</span> claude_otel.* <span class="keyword">FROM</span> bentoclick_llm;
+<span class="keyword">REVOKE</span> ALL <span class="keyword">ON</span> mydb.* <span class="keyword">FROM</span> bentoclick_llm;
 <span class="keyword">REVOKE</span> ALL <span class="keyword">ON</span> bentosecrets.* <span class="keyword">FROM</span> bentoclick_llm;
 <span class="keyword">REVOKE</span> ALL <span class="keyword">ON</span> bentoclick.dashboards <span class="keyword">FROM</span> bentoclick_llm;
 <span class="comment">-- bentoclick_llm writes via anon_author_role → dashboards_raw only.</span>
@@ -685,7 +685,7 @@ altinityMcp:
 
 <span class="comment">-- 2. Real data must be unreachable as bentoclick_llm.</span>
 <span class="comment">-- (Run from a CH client authenticated as bentoclick_llm)</span>
-<span class="keyword">SELECT</span> count() <span class="keyword">FROM</span> claude_otel.otel_traces;
+<span class="keyword">SELECT</span> count() <span class="keyword">FROM</span> mydb.otel_traces;
 <span class="comment">-- Expected: ACCESS_DENIED</span>
 
 <span class="comment">-- 3. SET ROLE must fail (no real roles to activate).</span>
@@ -694,7 +694,7 @@ altinityMcp:
 <span class="comment">-- Must return only {anon_mcp_reader, anon_author_role}.</span>
 
 <span class="comment">-- 4. Anon sandbox must be readable (basic smoke test).</span>
-<span class="keyword">SELECT</span> count() <span class="keyword">FROM</span> claude_otel_anon.otel_traces_anon <span class="keyword">LIMIT</span> 1;
+<span class="keyword">SELECT</span> count() <span class="keyword">FROM</span> mydb_anon.otel_traces_anon <span class="keyword">LIMIT</span> 1;
 <span class="comment">-- Expected: returns a number.</span>
 
 <span class="comment">-- 5. bentosecrets must be unreadable.</span>
