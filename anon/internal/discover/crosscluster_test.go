@@ -66,9 +66,10 @@ func testCfg(srcDB, dstDB string) Config {
 func TestObserveTokenizesCustomAttrKeys(t *testing.T) {
 	src := &fakeExec{rows: map[string]*chclient.Rows{
 		// attrKeyRoles scan: one custom (non-semconv) key + one semconv key.
-		"uniqExact(v) AS card": {Data: [][]*string{
-			{s("my.custom_key"), s("100"), s("0")}, // custom -> field_ token
-			{s("http.method"), s("4"), s("0")},     // semconv -> kept real, no field token
+		// cols: k, uniq(v) card, numfrac, piifrac.
+		"uniq(v) AS card": {Data: [][]*string{
+			{s("my.custom_key"), s("100"), s("0"), s("0")}, // custom -> field_ token
+			{s("http.method"), s("4"), s("0"), s("0")},     // semconv -> kept real, no field token
 		}},
 	}}
 	r, err := NewRun(testCfg("biz", "biz_anon"), src, &fakeExec{})

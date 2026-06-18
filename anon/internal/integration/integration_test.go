@@ -95,15 +95,23 @@ func seedSource(t *testing.T, ex chclient.Executor, db string) {
 	stmts := []string{
 		fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", db),
 		fmt.Sprintf("CREATE DATABASE `%s`", db),
+		// attrs Map exercises the attr-key classifier: a low-card vocabulary key
+		// (os), a numeric measure key (dur_ms), and a PII-value key (contact) —
+		// low-card emails whose NAME dodges the denylist, so only the value-PII
+		// gate (H2 #2) can keep its real emails out of the sandbox.
 		fmt.Sprintf("CREATE TABLE `%s`.commits ("+
 			"commit_hash String, author_name String, author_email String, "+
 			"message String, added_lines UInt32, repo_name LowCardinality(String), "+
-			"commit_time DateTime) ENGINE = MergeTree ORDER BY commit_time", db),
+			"attrs Map(String, String), commit_time DateTime) ENGINE = MergeTree ORDER BY commit_time", db),
 		fmt.Sprintf("INSERT INTO `%s`.commits SELECT "+
 			"lower(hex(murmurHash3_128(toString(number)))), concat('author_', toString(number %% 37)), "+
 			"concat('user', toString(number %% 37), '@example.com'), "+
 			"concat('commit message ', toString(number)), toUInt32(number %% 900), "+
-			"['alpha','beta','gamma'][1 + (number %% 3)], now() - toIntervalSecond(number) "+
+			"['alpha','beta','gamma'][1 + (number %% 3)], "+
+			"map('os', ['linux','mac','windows'][1 + (number %% 3)], "+
+			"'dur_ms', toString(number %% 1000), "+
+			"'contact', concat('user', toString(number %% 30), '@example.com')), "+
+			"now() - toIntervalSecond(number) "+
 			"FROM numbers(3000)", db),
 		fmt.Sprintf("CREATE TABLE `%s`.authors ("+
 			"author_email String, display_name String, commits_count UInt64) "+
@@ -253,6 +261,34 @@ func TestPipeline(t *testing.T) {
 	f := setupSingle(t)
 	f.execute(t)
 	f.runAssertions(t)
+	// H2 #2: the seeded `contact` attr key (low-card emails, non-PII name) must be
+	// masked by the value-PII gate — no email survives in the sandbox attrmap.
+	t.Run("H2_value_pii_masked", func(t *testing.T) { f.assertNoEmailAttrValue(t) })
+}
+
+// assertNoEmailAttrValue checks that no attrmap VALUE in the sandbox contains an
+// '@' — i.e. the value-PII gate masked the email-valued key even though its name
+// dodged the denylist and its cardinality alone would read as vocabulary.
+func (f *fixture) assertNoEmailAttrValue(t *testing.T) {
+	rows, err := f.dstEx.Query(f.ctx, fmt.Sprintf(
+		"SELECT table_token, col_token FROM `%s`.profile_columns "+
+			"WHERE class = 'attrmap' AND included = 1 LIMIT 1", f.metaDB))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows.Data) == 0 {
+		t.Fatal("seed has an attrmap column; expected one in profile_columns")
+	}
+	tblTok, colTok := *rows.Data[0][0], *rows.Data[0][1]
+	cnt, err := f.dstEx.Query(f.ctx, fmt.Sprintf(
+		"SELECT countIf(position(v, '@') > 0) FROM "+
+			"(SELECT arrayJoin(mapValues(%s)) AS v FROM `%s`.`%s`)", colTok, f.cfg.DestDB, tblTok))
+	if err != nil {
+		t.Fatalf("attrmap email scan: %v", err)
+	}
+	if len(cnt.Data) > 0 && cnt.Data[0][0] != nil && *cnt.Data[0][0] != "0" {
+		t.Errorf("PII email values survived in the sandbox attrmap (%s '@' hits) — value-PII gate (#2) failed", *cnt.Data[0][0])
+	}
 }
 
 func TestCrossCluster(t *testing.T) {

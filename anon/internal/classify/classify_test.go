@@ -161,14 +161,38 @@ func TestAttrKeyTokenization(t *testing.T) {
 // its values are numeric; a numeric measure key (not PII-named) stays measure.
 func TestClassifyAttrKeyIdentity(t *testing.T) {
 	deny := regexp.MustCompile(DefaultPIIKeyPattern)
-	if r := ClassifyAttrKey("account.number", 100000, 1.0, 64, deny); r != RoleIdentity {
+	if r := ClassifyAttrKey("account.number", 100000, 1.0, 0.0, 64, 0.5, deny); r != RoleIdentity {
 		t.Errorf("PII-named numeric key must be identity, got %s", r)
 	}
-	if r := ClassifyAttrKey("user.id", 100000, 1.0, 64, deny); r != RoleIdentity {
+	if r := ClassifyAttrKey("user.id", 100000, 1.0, 0.0, 64, 0.5, deny); r != RoleIdentity {
 		t.Errorf("user.id must be identity, got %s", r)
 	}
-	if r := ClassifyAttrKey("output_tokens", 5000, 1.0, 64, deny); r != RoleMeasure {
+	if r := ClassifyAttrKey("output_tokens", 5000, 1.0, 0.0, 64, 0.5, deny); r != RoleMeasure {
 		t.Errorf("numeric non-PII key must be measure, got %s", r)
+	}
+}
+
+// TestClassifyAttrKeyValuePII (H2 #2): a key whose NAME dodges the denylist but
+// whose VALUES look like PII is forced to identity by piiValueFraction, even when
+// low-cardinality (would otherwise be vocabulary → kept real).
+func TestClassifyAttrKeyValuePII(t *testing.T) {
+	deny := regexp.MustCompile(DefaultPIIKeyPattern)
+	const thr, piiThr = uint64(64), 0.5
+	// low-card + high value-PII fraction -> identity (the leak the gate closes)
+	if r := ClassifyAttrKey("assignee", 40, 0.0, 1.0, thr, piiThr, deny); r != RoleIdentity {
+		t.Errorf("low-card key full of PII values must be identity, got %s", r)
+	}
+	// value-PII below threshold -> normal low-card vocabulary
+	if r := ClassifyAttrKey("region", 5, 0.0, 0.49, thr, piiThr, deny); r != RoleVocabulary {
+		t.Errorf("low-card key below the PII-value threshold must be vocabulary, got %s", r)
+	}
+	// clean low-card categorical -> vocabulary
+	if r := ClassifyAttrKey("os.type", 3, 0.0, 0.0, thr, piiThr, deny); r != RoleVocabulary {
+		t.Errorf("clean low-card key must be vocabulary, got %s", r)
+	}
+	// high-card non-numeric non-PII free text -> sensitive
+	if r := ClassifyAttrKey("note", 100000, 0.0, 0.0, thr, piiThr, deny); r != RoleSensitive {
+		t.Errorf("high-card free text must be sensitive, got %s", r)
 	}
 }
 

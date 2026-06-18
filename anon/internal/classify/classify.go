@@ -325,12 +325,26 @@ var measureValueRe = regexp.MustCompile(`^-?[0-9]+(\.[0-9]+)?$`)
 // for computing the numeric fraction of a key's values in the discovery query.
 const MeasureValueSQL = `^-?[0-9]+(\.[0-9]+)?$`
 
-// ClassifyAttrKey assigns a role to one attribute key. denyRe (PII) is checked
-// FIRST (safety), then numeric→measure, then low-cardinality→vocabulary, else
-// sensitive. cardinality and numericFraction come from a source-side scan of the
-// key's values; threshold is the vocabulary cardinality ceiling.
-func ClassifyAttrKey(key string, cardinality uint64, numericFraction float64, threshold uint64, denyRe *regexp.Regexp) AttrRole {
+// PIIValueSQL matches high-confidence PII *value* shapes — email, IPv4, UUID,
+// and ≥16-char hex/long-id blobs — as a ClickHouse `match()` regex. It catches
+// keys whose NAME dodges DefaultPIIKeyPattern but whose VALUES are clearly PII
+// (e.g. an `assignee` key full of emails). Deliberately NOT plain digit runs:
+// those are numeric measures (handled by the measure rule) or numerically-named
+// identity keys (handled by the name denylist); matching them here would mask
+// legitimate measures. RE2-compatible.
+const PIIValueSQL = `([^@\s]+@[^@\s]+\.[A-Za-z]{2,})|(\b([0-9]{1,3}\.){3}[0-9]{1,3}\b)|([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})|(\b[0-9a-fA-F]{16,}\b)`
+
+// ClassifyAttrKey assigns a role to one attribute key. Checks, in order:
+// name PII denylist (safety) → value-PII fraction (values look like PII
+// regardless of name/cardinality) → numeric→measure → low-cardinality→vocabulary
+// → sensitive. cardinality, numericFraction, and piiValueFraction come from a
+// source-side scan of the key's values; threshold is the vocabulary cardinality
+// ceiling; piiThreshold is the value-PII fraction at/above which a key is masked.
+func ClassifyAttrKey(key string, cardinality uint64, numericFraction, piiValueFraction float64, threshold uint64, piiThreshold float64, denyRe *regexp.Regexp) AttrRole {
 	if denyRe != nil && denyRe.MatchString(key) {
+		return RoleIdentity
+	}
+	if piiValueFraction >= piiThreshold {
 		return RoleIdentity
 	}
 	if numericFraction >= 0.9 {

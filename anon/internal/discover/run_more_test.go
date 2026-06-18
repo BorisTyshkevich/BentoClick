@@ -492,7 +492,7 @@ func TestAttrParamsCustomPattern(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.Cfg.PIIKeyPattern = "mysecret"
-	threshold, re, err := r.attrParams()
+	threshold, _, re, err := r.attrParams()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -509,12 +509,15 @@ func TestAttrParamsDefaultThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	threshold, _, err := r.attrParams()
+	threshold, piiThr, _, err := r.attrParams()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if threshold != 64 {
 		t.Errorf("default threshold = %d, want 64", threshold)
+	}
+	if piiThr != 0.5 {
+		t.Errorf("default PII-value threshold = %v, want 0.5", piiThr)
 	}
 }
 
@@ -524,7 +527,7 @@ func TestAttrParamsCustomThreshold(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.Cfg.AttrCardThreshold = 128
-	threshold, _, err := r.attrParams()
+	threshold, _, _, err := r.attrParams()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -538,9 +541,9 @@ func TestAttrParamsCustomThreshold(t *testing.T) {
 func TestAttrRolesForMemoized(t *testing.T) {
 	callCount := 0
 	src := &fakeExec{rows: map[string]*chclient.Rows{
-		"uniqExact(v)": {
+		"uniq(v)": {
 			Data: [][]*string{
-				{s("http.method"), s("4"), s("0")},
+				{s("http.method"), s("4"), s("0"), s("0")},
 			},
 		},
 	}}
@@ -552,11 +555,11 @@ func TestAttrRolesForMemoized(t *testing.T) {
 	}
 	ctx := context.Background()
 	// Call twice with same args
-	info1, err := r.attrRolesFor(ctx, "biz", "events", "attrs")
+	info1, err := r.attrRolesFor(ctx, "biz", "events", "attrs", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	info2, err := r.attrRolesFor(ctx, "biz", "events", "attrs")
+	info2, err := r.attrRolesFor(ctx, "biz", "events", "attrs", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -566,6 +569,42 @@ func TestAttrRolesForMemoized(t *testing.T) {
 	}
 	if len(info1) != len(info2) {
 		t.Errorf("memoized result differs: %v vs %v", info1, info2)
+	}
+}
+
+// TestAttrKeyScanQuery (H2 #1/#2): the attr-key scan uses global uniq() + a
+// value-PII fraction, windows to the sandbox window when a time column exists,
+// and never falls back to the recency-biased LIMIT 200000 prefix.
+func TestAttrKeyScanQuery(t *testing.T) {
+	src := &fakeExec{}
+	r, err := NewRun(testCfg("biz", "biz"), src, &fakeExec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.attrRolesFor(context.Background(), "biz", "events", "attrs", "ts"); err != nil {
+		t.Fatal(err)
+	}
+	if len(src.queries) != 1 {
+		t.Fatalf("want 1 scan query, got %d", len(src.queries))
+	}
+	q := src.queries[0]
+	for _, want := range []string{"uniq(v)", "piifrac", "INTERVAL", "`ts` >="} {
+		if !strings.Contains(q, want) {
+			t.Errorf("scan query missing %q:\n%s", want, q)
+		}
+	}
+	if strings.Contains(q, "LIMIT 200000") || strings.Contains(q, "uniqExact") {
+		t.Errorf("scan query still uses the prefix/exact path:\n%s", q)
+	}
+
+	// no time column -> full table, no window
+	src2 := &fakeExec{}
+	r2, _ := NewRun(testCfg("biz", "biz"), src2, &fakeExec{})
+	if _, err := r2.attrRolesFor(context.Background(), "biz", "events", "attrs", ""); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(src2.queries[0], "INTERVAL") {
+		t.Errorf("no-time-column scan must not window:\n%s", src2.queries[0])
 	}
 }
 
