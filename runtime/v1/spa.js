@@ -7,8 +7,9 @@
 // the sibling ./spa-helpers.js module for direct unit-test coverage.
 //
 // Data path: this shell calls ClickHouse HTTPS DIRECTLY (the CH_URL from
-// /config.json) with the OAuth bearer in the Authorization header. The MCP
-// is used only for the OAuth bootstrap (RFC 9728 protected-resource
+// /config.json). The configured HTTP auth scheme carries the OAuth token:
+// Bearer for token-processor deployments, or Basic email:token for LDAP.
+// The MCP is used only for the OAuth bootstrap (RFC 9728 protected-resource
 // discovery, /oauth/authorize, /oauth/token).
 //
 // Deploy: see scripts/install.sh (full) or scripts/update.sh (assets only)
@@ -32,6 +33,7 @@ var CFG       = null;                    // populated by loadConfig() at boot
 var MCP       = null;                    // CFG.mcp_url    — OAuth AS / RS root
 var CH_URL    = null;                    // CFG.ch_url     — data-path origin
 var DB        = null;                    // CFG.db         — dashboards database name
+var CH_AUTH    = 'bearer';                // CFG.ch_auth    — bearer (default) or basic
 var TOK_KEY   = 'mcp_tok';
 var OLD_CID_KEYS = ['mcp_cid', 'mcp_cid_v2'];
 var CID_KEY   = 'mcp_cid_v3';
@@ -121,6 +123,7 @@ async function loadConfig() {
   MCP    = j.mcp_url.replace(/\/$/, '');
   CH_URL = j.ch_url.replace(/\/$/, '');
   DB     = j.db || 'dashboards';
+  CH_AUTH = j.ch_auth === 'basic' ? 'basic' : 'bearer';
   if (j.brand_name) document.title = j.brand_name;
 }
 
@@ -222,7 +225,7 @@ async function startAuth(returnTo) {
   u.searchParams.set('code_challenge', c);
   u.searchParams.set('code_challenge_method', 'S256');
   u.searchParams.set('state', state);
-  u.searchParams.set('scope', 'openid email offline_access');
+  u.searchParams.set('scope', 'openid profile email offline_access');
   // Auth0: `audience` selects the API whose identifier becomes the JWT `aud`,
   // which CH's <token_processor expected_audience> byte-matches. Auth0 uses
   // `audience` (not the RFC 8707 `resource` param) to mint API access tokens.
@@ -246,12 +249,27 @@ function clearTokenAndRestart() {
 async function chQuery(sql) {
   var tok = lsGet(TOK_KEY);
   if (!tok) throw new Error('Auth expired');
-  // Direct CH HTTP. CH's <token_processor> resolves the JWT and runs the
-  // query under currentUser() = the OAuth subject's email. No MCP hop.
+  // Direct CH HTTP. LDAP accepts the standard Basic username as the email and
+  // validates the JWT supplied as the password. Keep Bearer support for
+  // token-processor deployments.
+  var authorization = 'Bearer ' + tok;
+  if (CH_AUTH === 'basic') {
+    var parts = tok.split('.');
+    var payload = null;
+    try {
+      payload = JSON.parse(decodeURIComponent(Array.prototype.map.call(
+        atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')),
+        function(c) { return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2); }
+      ).join('')));
+    } catch (_) {}
+    var username = payload && typeof payload.email === 'string' ? payload.email : '';
+    if (!username) throw new Error('Token is missing email');
+    authorization = 'Basic ' + btoa(unescape(encodeURIComponent(username + ':' + tok)));
+  }
   var u = new URL(CH_URL + '/');
   u.searchParams.set('query', sql);
   u.searchParams.set('default_format', 'JSONCompact');
-  var r = await withTimeout(u.toString(), { headers: { 'Authorization': 'Bearer ' + tok } });
+  var r = await withTimeout(u.toString(), { headers: { 'Authorization': authorization } });
   if (r.status === 401 || r.status === 403) throw new Error('Auth expired');
   if (!r.ok) {
     var body = (await r.text()).slice(0, 400);
